@@ -3,7 +3,9 @@
     "allow": [
       "Bash(cargo espflash flash:*)",
       "Bash(cargo build:*)",
-      "Bash(gh pr create:*)"
+      "Bash(gh pr create:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)"
     ]
   }
 }
