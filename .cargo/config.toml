@@ -14,3 +14,29 @@ MCU="esp32s3"
 # Note: this variable is not used by the pio builder (`cargo build --features pio`)
 ESP_IDF_VERSION = "v5.3.3"
 
+# The rustup xtensa toolchain (esp-15.2.0) is newer than what ESP-IDF v5.3.3 expects
+# (esp-13.2.0_20240530), but is functionally compatible. This flag downgrades cmake's
+# FATAL_ERROR to a WARNING so the build proceeds.
+IDF_MAINTAINER = "1"
+
+# The directory that has the lvgl config files - lv_conf.h, lv_drv_conf.h
+DEP_LV_CONFIG_PATH = { relative = true, value = "lvgl-configs" }
+
+# Required to make lvgl build correctly otherwise get wrong file type (ie compiled for a big endian system and target is little endian)
+CROSS_COMPILE = "xtensa-esp32s3-elf"
+
+# Required for lvgl otherwise the build would fail with the error -> dangerous relocation: call8: call target out of range
+# for some lvgl functions
+CFLAGS_xtensa_esp32s3_espidf="-mlongcalls"
+
+# Required for lvgl to build otherwise you will get string.h not found.
+# Verfiy path and toolchain version being used on your PC (esp-14.2.0_20240906)
+TARGET_C_INCLUDE_PATH = "/Users/joel.chan/.rustup/toolchains/esp/xtensa-esp-elf/esp-15.2.0_20250920/xtensa-esp-elf/xtensa-esp-elf/include"
+C_INCLUDE_PATH = "/Users/joel.chan/.rustup/toolchains/esp/xtensa-esp-elf/esp-15.2.0_20250920/xtensa-esp-elf/xtensa-esp-elf/include"
+# Fix for bindgen 0.64.0 bug on Apple Silicon: clang reports "arm64-apple-darwin"
+# but the TARGET env var is "aarch64-apple-darwin". bindgen treats "arm64" as 32-bit
+# (pointer size 4) while "aarch64" is 64-bit (pointer size 8), causing an assertion failure.
+# The target-specific env var (checked before the global one) scopes this fix to HOST builds
+# only, so ESP32 cross-compilation bindgen is unaffected.
+BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_darwin = "--target=aarch64-apple-darwin"
+
