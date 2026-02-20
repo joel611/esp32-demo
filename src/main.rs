@@ -24,6 +24,10 @@ static TOUCH_X: AtomicI32 = AtomicI32::new(0);
 static TOUCH_Y: AtomicI32 = AtomicI32::new(0);
 static TOUCH_PRESSED: AtomicBool = AtomicBool::new(false);
 
+// Screen object pointers. Written once during init, read by gesture callback.
+static mut SCREEN1: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
+static mut SCREEN2: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
+
 // LVGL flush callback: called by LVGL when a region needs to be sent to the display.
 // lv_area_t coords are inclusive; lcd_draw_bitmap expects exclusive x2/y2.
 unsafe extern "C" fn lvgl_flush_cb(
@@ -53,6 +57,39 @@ unsafe extern "C" fn lvgl_touch_cb(
     } else {
         (*data).state = lvgl_sys::lv_indev_state_t_LV_INDEV_STATE_RELEASED;
     }
+}
+
+/// Gesture event callback attached to both screens.
+/// Swipe LEFT  → load screen 2 (if on screen 1).
+/// Swipe RIGHT → load screen 1 (if on screen 2).
+unsafe extern "C" fn gesture_cb(e: *mut lvgl_sys::lv_event_t) {
+    let indev = lvgl_sys::lv_indev_get_act();
+    if indev.is_null() {
+        return;
+    }
+    let dir = lvgl_sys::lv_indev_get_gesture_dir(indev); // returns lv_dir_t = u8
+    let active = lvgl_sys::lv_disp_get_scr_act(lvgl_sys::lv_disp_get_default());
+
+    if dir == lvgl_sys::LV_DIR_LEFT as lvgl_sys::lv_dir_t && active == SCREEN1 {
+        lvgl_sys::lv_scr_load_anim(
+            SCREEN2,
+            lvgl_sys::lv_scr_load_anim_t_LV_SCR_LOAD_ANIM_MOVE_LEFT,
+            300,
+            0,
+            false,
+        );
+    } else if dir == lvgl_sys::LV_DIR_RIGHT as lvgl_sys::lv_dir_t && active == SCREEN2 {
+        lvgl_sys::lv_scr_load_anim(
+            SCREEN1,
+            lvgl_sys::lv_scr_load_anim_t_LV_SCR_LOAD_ANIM_MOVE_RIGHT,
+            300,
+            0,
+            false,
+        );
+    }
+
+    // Suppress unused parameter warning
+    let _ = e;
 }
 
 fn main() {
@@ -120,12 +157,51 @@ fn main() {
         lvgl_sys::lv_indev_drv_register(indev_drv);
         log::info!("LVGL touch input registered");
 
-        // ── 7. Simple UI: centered label ──────────────────────────────────────
-        let screen = lvgl_sys::lv_disp_get_scr_act(lvgl_sys::lv_disp_get_default());
-        let label = lvgl_sys::lv_label_create(screen);
-        lvgl_sys::lv_label_set_text(label, b"Hello ESP32!\0".as_ptr() as *const i8);
-        lvgl_sys::lv_obj_align(label, lvgl_sys::LV_ALIGN_CENTER as u8, 0, 0);
-        log::info!("UI created");
+        // ── 7. Two-screen UI ──────────────────────────────────────────────────
+        // Screen 1: the default screen LVGL created when the display was registered.
+        SCREEN1 = lvgl_sys::lv_disp_get_scr_act(lvgl_sys::lv_disp_get_default());
+
+        // Dark background for screen 1
+        lvgl_sys::lv_obj_set_style_bg_color(
+            SCREEN1,
+            lvgl_sys::_LV_COLOR_MAKE(0x10, 0x10, 0x10),
+            lvgl_sys::LV_STATE_DEFAULT,
+        );
+
+        let label1 = lvgl_sys::lv_label_create(SCREEN1);
+        lvgl_sys::lv_label_set_text(label1, b"Screen 1\0".as_ptr() as *const i8);
+        lvgl_sys::lv_obj_align(label1, lvgl_sys::LV_ALIGN_CENTER as u8, 0, 0);
+
+        // Screen 2: new screen object (parent = null → creates a standalone screen)
+        SCREEN2 = lvgl_sys::lv_obj_create(core::ptr::null_mut());
+
+        // Blue background for screen 2 so it's visually distinct
+        lvgl_sys::lv_obj_set_style_bg_color(
+            SCREEN2,
+            lvgl_sys::_LV_COLOR_MAKE(0x00, 0x30, 0x80),
+            lvgl_sys::LV_STATE_DEFAULT,
+        );
+
+        let label2 = lvgl_sys::lv_label_create(SCREEN2);
+        lvgl_sys::lv_label_set_text(label2, b"Screen 2\0".as_ptr() as *const i8);
+        lvgl_sys::lv_obj_align(label2, lvgl_sys::LV_ALIGN_CENTER as u8, 0, 0);
+
+        // Attach gesture callbacks — LVGL sends LV_EVENT_GESTURE to the screen
+        // when a drag exceeds LV_INDEV_DEF_GESTURE_LIMIT (default 50px).
+        lvgl_sys::lv_obj_add_event_cb(
+            SCREEN1,
+            Some(gesture_cb),
+            lvgl_sys::lv_event_code_t_LV_EVENT_GESTURE,
+            core::ptr::null_mut(),
+        );
+        lvgl_sys::lv_obj_add_event_cb(
+            SCREEN2,
+            Some(gesture_cb),
+            lvgl_sys::lv_event_code_t_LV_EVENT_GESTURE,
+            core::ptr::null_mut(),
+        );
+
+        log::info!("Two screens created, gesture callbacks attached");
     }
 
     // ── 8. LVGL timer loop ────────────────────────────────────────────────────
