@@ -53,3 +53,7 @@ embedded-hal = "1.0.0"
 
 [build-dependencies]
 embuild = "0.33"
+
+# Tell esp-idf-sys to include our local C components in the ESP-IDF CMake build.
+[[package.metadata.esp-idf-sys.extra_components]]
+component_dirs = ["components"]
