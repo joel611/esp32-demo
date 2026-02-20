@@ -40,6 +40,21 @@ unsafe extern "C" fn lvgl_flush_cb(
     lvgl_sys::lv_disp_flush_ready(disp_drv);
 }
 
+/// LVGL input device read callback. Called by lv_timer_handler() on every tick.
+/// Reads touch state from the atomics updated in the main loop.
+unsafe extern "C" fn lvgl_touch_cb(
+    _drv: *mut lvgl_sys::lv_indev_drv_t,
+    data: *mut lvgl_sys::lv_indev_data_t,
+) {
+    if TOUCH_PRESSED.load(Ordering::Relaxed) {
+        (*data).point.x = TOUCH_X.load(Ordering::Relaxed) as lvgl_sys::lv_coord_t;
+        (*data).point.y = TOUCH_Y.load(Ordering::Relaxed) as lvgl_sys::lv_coord_t;
+        (*data).state = lvgl_sys::lv_indev_state_t_LV_INDEV_STATE_PRESSED;
+    } else {
+        (*data).state = lvgl_sys::lv_indev_state_t_LV_INDEV_STATE_RELEASED;
+    }
+}
+
 fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -96,7 +111,16 @@ fn main() {
         lvgl_sys::lv_disp_drv_register(disp_drv);
         log::info!("LVGL display registered");
 
-        // ── 6. Simple UI: centered label ──────────────────────────────────────
+        // ── 6. Input device (touch) ───────────────────────────────────────────
+        let indev_drv: &'static mut lvgl_sys::lv_indev_drv_t =
+            Box::leak(Box::new(core::mem::zeroed()));
+        lvgl_sys::lv_indev_drv_init(indev_drv);
+        indev_drv.type_ = lvgl_sys::lv_indev_type_t_LV_INDEV_TYPE_POINTER;
+        indev_drv.read_cb = Some(lvgl_touch_cb);
+        lvgl_sys::lv_indev_drv_register(indev_drv);
+        log::info!("LVGL touch input registered");
+
+        // ── 7. Simple UI: centered label ──────────────────────────────────────
         let screen = lvgl_sys::lv_disp_get_scr_act(lvgl_sys::lv_disp_get_default());
         let label = lvgl_sys::lv_label_create(screen);
         lvgl_sys::lv_label_set_text(label, b"Hello ESP32!\0".as_ptr() as *const i8);
@@ -104,9 +128,22 @@ fn main() {
         log::info!("UI created");
     }
 
-    // ── 7. LVGL timer loop ────────────────────────────────────────────────────
+    // ── 8. LVGL timer loop ────────────────────────────────────────────────────
     log::info!("Entering LVGL loop");
     loop {
+        // Poll touch BEFORE lv_timer_handler() so the indev callback
+        // (called inside lv_timer_handler) sees the current state.
+        match ft3168.read_touch() {
+            Ok(Some((x, y))) => {
+                TOUCH_X.store(x as i32, Ordering::Relaxed);
+                TOUCH_Y.store(y as i32, Ordering::Relaxed);
+                TOUCH_PRESSED.store(true, Ordering::Relaxed);
+            }
+            _ => {
+                TOUCH_PRESSED.store(false, Ordering::Relaxed);
+            }
+        }
+
         unsafe {
             lvgl_sys::lv_tick_inc(5);
             lvgl_sys::lv_timer_handler();
