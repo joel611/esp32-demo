@@ -1,34 +1,124 @@
 use std::time::Duration;
 
+mod ft3168;
+
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
+
+use esp_idf_svc::hal::i2c::{I2cConfig, I2cDriver};
+use esp_idf_svc::hal::peripherals::Peripherals;
+use esp_idf_svc::hal::units::Hertz;
+
 extern "C" {
     fn lcd_driver_init() -> i32;
+    #[allow(dead_code)]
     fn lcd_draw_bitmap(x1: i32, y1: i32, x2: i32, y2: i32, data: *const core::ffi::c_void);
+    fn lcd_draw_bitmap_async(x1: i32, y1: i32, x2: i32, y2: i32, data: *const core::ffi::c_void);
+    fn lcd_wait_flush_done();
 }
 
 const LCD_W: u32 = 466;
 const LCD_H: u32 = 466;
-const DRAW_BUF_PIXELS: usize = LCD_W as usize * 20; // 20 rows per flush
+const DRAW_BUF_PIXELS: usize = LCD_W as usize * 100; // 100 rows (~91KB internal DMA SRAM)
 
-// LVGL flush callback: called by LVGL when a region needs to be sent to the display.
+// Touch state written by the main loop, read by the LVGL indev callback.
+// Both run on the same thread (indev cb is called inside lv_timer_handler),
+// so Relaxed ordering is sufficient.
+static TOUCH_X: AtomicI32 = AtomicI32::new(0);
+static TOUCH_Y: AtomicI32 = AtomicI32::new(0);
+static TOUCH_PRESSED: AtomicBool = AtomicBool::new(false);
+
+// Screen object pointers. Written once during init, read by gesture callback.
+static mut SCREEN1: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
+static mut SCREEN2: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
+
+// LVGL flush callback — double-buffer async DMA pattern:
+//   1. Wait for the previous async DMA to finish (no-op on first call).
+//   2. Start a new async DMA for the current buffer.
+//   3. Immediately signal flush_ready so LVGL can render into the OTHER buffer
+//      while the DMA for this buffer runs in the background.
 // lv_area_t coords are inclusive; lcd_draw_bitmap expects exclusive x2/y2.
 unsafe extern "C" fn lvgl_flush_cb(
     disp_drv: *mut lvgl_sys::lv_disp_drv_t,
     area: *const lvgl_sys::lv_area_t,
     color_p: *mut lvgl_sys::lv_color_t,
 ) {
+    lcd_wait_flush_done();
     let x1 = (*area).x1 as i32;
     let y1 = (*area).y1 as i32;
     let x2 = (*area).x2 as i32 + 1;
     let y2 = (*area).y2 as i32 + 1;
-    lcd_draw_bitmap(x1, y1, x2, y2, color_p as *const _);
-    // lcd_draw_bitmap blocks until DMA completes, so we can signal ready immediately.
+    lcd_draw_bitmap_async(x1, y1, x2, y2, color_p as *const _);
+    // Signal LVGL immediately: with two buffers, this swaps buf_act so LVGL
+    // can render the next chunk into the other buffer concurrently with the DMA.
     lvgl_sys::lv_disp_flush_ready(disp_drv);
+}
+
+/// LVGL input device read callback. Called by lv_timer_handler() on every tick.
+/// Reads touch state from the atomics updated in the main loop.
+unsafe extern "C" fn lvgl_touch_cb(
+    _drv: *mut lvgl_sys::lv_indev_drv_t,
+    data: *mut lvgl_sys::lv_indev_data_t,
+) {
+    if TOUCH_PRESSED.load(Ordering::Relaxed) {
+        (*data).point.x = TOUCH_X.load(Ordering::Relaxed) as lvgl_sys::lv_coord_t;
+        (*data).point.y = TOUCH_Y.load(Ordering::Relaxed) as lvgl_sys::lv_coord_t;
+        (*data).state = lvgl_sys::lv_indev_state_t_LV_INDEV_STATE_PRESSED;
+    } else {
+        (*data).state = lvgl_sys::lv_indev_state_t_LV_INDEV_STATE_RELEASED;
+    }
+}
+
+/// Gesture event callback attached to both screens.
+/// Swipe LEFT  → load screen 2 (if on screen 1).
+/// Swipe RIGHT → load screen 1 (if on screen 2).
+unsafe extern "C" fn gesture_cb(e: *mut lvgl_sys::lv_event_t) {
+    let indev = lvgl_sys::lv_indev_get_act();
+    if indev.is_null() {
+        return;
+    }
+    let dir = lvgl_sys::lv_indev_get_gesture_dir(indev); // returns lv_dir_t = u8
+    let active = lvgl_sys::lv_disp_get_scr_act(lvgl_sys::lv_disp_get_default());
+
+    if dir == lvgl_sys::LV_DIR_LEFT as lvgl_sys::lv_dir_t && active == SCREEN1 {
+        lvgl_sys::lv_scr_load_anim(
+            SCREEN2,
+            lvgl_sys::lv_scr_load_anim_t_LV_SCR_LOAD_ANIM_MOVE_LEFT,
+            150,
+            0,
+            false,
+        );
+    } else if dir == lvgl_sys::LV_DIR_RIGHT as lvgl_sys::lv_dir_t && active == SCREEN2 {
+        lvgl_sys::lv_scr_load_anim(
+            SCREEN1,
+            lvgl_sys::lv_scr_load_anim_t_LV_SCR_LOAD_ANIM_MOVE_RIGHT,
+            150,
+            0,
+            false,
+        );
+    }
+
+    // Suppress unused parameter warning
+    let _ = e;
 }
 
 fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
     log::info!("=== LVGL display test ===");
+
+    // ── 0. Touch controller init ──────────────────────────────────────────────
+    let peripherals = Peripherals::take().unwrap();
+    let i2c_config = I2cConfig::new().baudrate(Hertz(600_000));
+    let i2c = I2cDriver::new(
+        peripherals.i2c0,
+        peripherals.pins.gpio47, // SDA
+        peripherals.pins.gpio48, // SCL
+        &i2c_config,
+    )
+    .unwrap();
+    let mut ft3168 = ft3168::Ft3168::new(i2c);
+    ft3168.init().expect("FT3168 init failed");
+    log::info!("FT3168 touch controller ready");
 
     // ── 1. Hardware init ──────────────────────────────────────────────────────
     let ret = unsafe { lcd_driver_init() };
@@ -39,20 +129,27 @@ fn main() {
         // ── 2. LVGL init ──────────────────────────────────────────────────────
         lvgl_sys::lv_init();
 
-        // ── 3. DMA-capable pixel buffer ───────────────────────────────────────
-        let buf = esp_idf_svc::sys::heap_caps_malloc(
-            DRAW_BUF_PIXELS * core::mem::size_of::<lvgl_sys::lv_color_t>(),
+        // ── 3. Two DMA-capable pixel buffers for double-buffering ─────────────
+        // Must be internal SRAM: esp-lcd SPI driver calls esp_ptr_dma_capable()
+        // which rejects PSRAM. Two 100-row buffers (~182KB total).
+        let pixel_size = core::mem::size_of::<lvgl_sys::lv_color_t>();
+        let buf1 = esp_idf_svc::sys::heap_caps_malloc(
+            DRAW_BUF_PIXELS * pixel_size,
             esp_idf_svc::sys::MALLOC_CAP_DMA,
         ) as *mut lvgl_sys::lv_color_t;
-        assert!(!buf.is_null(), "LVGL draw buf alloc failed");
+        let buf2 = esp_idf_svc::sys::heap_caps_malloc(
+            DRAW_BUF_PIXELS * pixel_size,
+            esp_idf_svc::sys::MALLOC_CAP_DMA,
+        ) as *mut lvgl_sys::lv_color_t;
+        assert!(!buf1.is_null() && !buf2.is_null(), "LVGL draw buf alloc failed");
 
         // ── 4. Draw buffer struct (leaked: LVGL holds a pointer to it) ────────
         let disp_buf: &'static mut lvgl_sys::lv_disp_draw_buf_t =
             Box::leak(Box::new(core::mem::zeroed()));
         lvgl_sys::lv_disp_draw_buf_init(
             disp_buf,
-            buf as *mut _,
-            core::ptr::null_mut(),
+            buf1 as *mut _,
+            buf2 as *mut _,
             DRAW_BUF_PIXELS as u32,
         );
 
@@ -67,17 +164,78 @@ fn main() {
         lvgl_sys::lv_disp_drv_register(disp_drv);
         log::info!("LVGL display registered");
 
-        // ── 6. Simple UI: centered label ──────────────────────────────────────
-        let screen = lvgl_sys::lv_disp_get_scr_act(lvgl_sys::lv_disp_get_default());
-        let label = lvgl_sys::lv_label_create(screen);
-        lvgl_sys::lv_label_set_text(label, b"Hello ESP32!\0".as_ptr() as *const i8);
-        lvgl_sys::lv_obj_align(label, lvgl_sys::LV_ALIGN_CENTER as u8, 0, 0);
-        log::info!("UI created");
+        // ── 6. Input device (touch) ───────────────────────────────────────────
+        let indev_drv: &'static mut lvgl_sys::lv_indev_drv_t =
+            Box::leak(Box::new(core::mem::zeroed()));
+        lvgl_sys::lv_indev_drv_init(indev_drv);
+        indev_drv.type_ = lvgl_sys::lv_indev_type_t_LV_INDEV_TYPE_POINTER;
+        indev_drv.read_cb = Some(lvgl_touch_cb);
+        lvgl_sys::lv_indev_drv_register(indev_drv);
+        log::info!("LVGL touch input registered");
+
+        // ── 7. Two-screen UI ──────────────────────────────────────────────────
+        // Screen 1: the default screen LVGL created when the display was registered.
+        SCREEN1 = lvgl_sys::lv_disp_get_scr_act(lvgl_sys::lv_disp_get_default());
+
+        // Dark background for screen 1
+        lvgl_sys::lv_obj_set_style_bg_color(
+            SCREEN1,
+            lvgl_sys::_LV_COLOR_MAKE(0x10, 0x10, 0x10),
+            lvgl_sys::LV_STATE_DEFAULT,
+        );
+
+        let label1 = lvgl_sys::lv_label_create(SCREEN1);
+        lvgl_sys::lv_label_set_text(label1, b"Screen 1\0".as_ptr() as *const i8);
+        lvgl_sys::lv_obj_align(label1, lvgl_sys::LV_ALIGN_CENTER as u8, 0, 0);
+
+        // Screen 2: new screen object (parent = null → creates a standalone screen)
+        SCREEN2 = lvgl_sys::lv_obj_create(core::ptr::null_mut());
+
+        // Blue background for screen 2 so it's visually distinct
+        lvgl_sys::lv_obj_set_style_bg_color(
+            SCREEN2,
+            lvgl_sys::_LV_COLOR_MAKE(0x00, 0x30, 0x80),
+            lvgl_sys::LV_STATE_DEFAULT,
+        );
+
+        let label2 = lvgl_sys::lv_label_create(SCREEN2);
+        lvgl_sys::lv_label_set_text(label2, b"Screen 2\0".as_ptr() as *const i8);
+        lvgl_sys::lv_obj_align(label2, lvgl_sys::LV_ALIGN_CENTER as u8, 0, 0);
+
+        // Attach gesture callbacks — LVGL sends LV_EVENT_GESTURE to the screen
+        // when a drag exceeds LV_INDEV_DEF_GESTURE_LIMIT (default 50px).
+        lvgl_sys::lv_obj_add_event_cb(
+            SCREEN1,
+            Some(gesture_cb),
+            lvgl_sys::lv_event_code_t_LV_EVENT_GESTURE,
+            core::ptr::null_mut(),
+        );
+        lvgl_sys::lv_obj_add_event_cb(
+            SCREEN2,
+            Some(gesture_cb),
+            lvgl_sys::lv_event_code_t_LV_EVENT_GESTURE,
+            core::ptr::null_mut(),
+        );
+
+        log::info!("Two screens created, gesture callbacks attached");
     }
 
-    // ── 7. LVGL timer loop ────────────────────────────────────────────────────
+    // ── 8. LVGL timer loop ────────────────────────────────────────────────────
     log::info!("Entering LVGL loop");
     loop {
+        // Poll touch BEFORE lv_timer_handler() so the indev callback
+        // (called inside lv_timer_handler) sees the current state.
+        match ft3168.read_touch() {
+            Ok(Some((x, y))) => {
+                TOUCH_X.store(x as i32, Ordering::Relaxed);
+                TOUCH_Y.store(y as i32, Ordering::Relaxed);
+                TOUCH_PRESSED.store(true, Ordering::Relaxed);
+            }
+            _ => {
+                TOUCH_PRESSED.store(false, Ordering::Relaxed);
+            }
+        }
+
         unsafe {
             lvgl_sys::lv_tick_inc(5);
             lvgl_sys::lv_timer_handler();

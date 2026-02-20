@@ -1,7 +1,9 @@
 {
   "permissions": {
     "allow": [
-      "Bash(cargo build:*)"
+      "Bash(cargo espflash flash:*)",
+      "Bash(cargo build:*)",
+      "Bash(gh pr create:*)"
     ]
   }
 }

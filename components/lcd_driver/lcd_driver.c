@@ -158,8 +158,9 @@ static uint8_t soft_spi_read_lcd_id(void)
 }
 
 // ── State ────────────────────────────────────────────────────────────────────
-static esp_lcd_panel_handle_t s_panel = NULL;
-static SemaphoreHandle_t s_flush_sem  = NULL;
+static esp_lcd_panel_handle_t s_panel    = NULL;
+static SemaphoreHandle_t      s_flush_sem = NULL;
+static volatile bool          s_dma_idle  = true;  // true = no DMA in flight
 
 // Called from SPI ISR when the pixel DMA transfer finishes.
 static bool on_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
@@ -246,6 +247,25 @@ void lcd_draw_bitmap(int x1, int y1, int x2, int y2, const void *data)
     // esp_lcd_panel_draw_bitmap enqueues CASET+RASET (sync) then the
     // pixel DMA (async).  We block on s_flush_sem until the ISR callback
     // signals that the DMA is complete.
+    s_dma_idle = false;
     esp_lcd_panel_draw_bitmap(s_panel, x1, y1, x2, y2, data);
     xSemaphoreTake(s_flush_sem, portMAX_DELAY);
+    s_dma_idle = true;
+}
+
+void lcd_draw_bitmap_async(int x1, int y1, int x2, int y2, const void *data)
+{
+    // Start pixel DMA and return immediately.  Caller must call
+    // lcd_wait_flush_done() before touching the buffer again.
+    s_dma_idle = false;
+    esp_lcd_panel_draw_bitmap(s_panel, x1, y1, x2, y2, data);
+}
+
+void lcd_wait_flush_done(void)
+{
+    // No-op if no DMA is in flight; otherwise blocks until ISR signals done.
+    if (!s_dma_idle) {
+        xSemaphoreTake(s_flush_sem, portMAX_DELAY);
+        s_dma_idle = true;
+    }
 }

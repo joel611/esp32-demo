@@ -27,3 +27,15 @@ cargo espflash flash --monitor
 - C component changes not taking effect? CMake cache is stale — check serial log for missing
   expected messages or wrong timing. Fix: rm -rf target/xtensa-esp32s3-espidf/debug/build/esp-idf-sys-*/
 - cargo espflash flash --monitor exits early in non-interactive terminals; flash succeeds, monitor fails
+
+## Git Worktrees
+- Worktree dir: `.worktree/` (singular). Each worktree has its OWN copy of `components/` — changes
+  to the main branch's `components/` are NOT visible to the worktree. Edit the worktree copy directly.
+- After modifying C components in a worktree, the CMake library may be stale even after clearing
+  esp-idf-sys-*/. Force full rebuild: rm -rf target/xtensa-esp32s3-espidf/debug/build/esp-idf-sys-<hash>/
+
+## LVGL Draw Buffer Limits
+- esp-lcd SPI driver calls esp_ptr_dma_capable() — PSRAM buffers are always rejected at transmit time
+  even with MALLOC_CAP_DMA flag. Max usable DMA buffer: ~100 rows × 466px × 2B ≈ 91KB.
+- Double-buffer async DMA pattern: lcd_wait_flush_done() → lcd_draw_bitmap_async() → lv_disp_flush_ready()
+  LVGL renders into one buffer while the other DMA's to the display.
