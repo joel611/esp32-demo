@@ -1,6 +1,7 @@
 use std::time::Duration;
 
 mod ft3168;
+mod safe_area;
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
