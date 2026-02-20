@@ -137,11 +137,11 @@ fn main() {
         let (buf1, buf2, buf_pixels) = {
             let b1 = esp_idf_svc::sys::heap_caps_malloc(
                 DRAW_BUF_FULL * pixel_size,
-                esp_idf_svc::sys::MALLOC_CAP_SPIRAM,
+                esp_idf_svc::sys::MALLOC_CAP_SPIRAM | esp_idf_svc::sys::MALLOC_CAP_DMA,
             ) as *mut lvgl_sys::lv_color_t;
             let b2 = esp_idf_svc::sys::heap_caps_malloc(
                 DRAW_BUF_FULL * pixel_size,
-                esp_idf_svc::sys::MALLOC_CAP_SPIRAM,
+                esp_idf_svc::sys::MALLOC_CAP_SPIRAM | esp_idf_svc::sys::MALLOC_CAP_DMA,
             ) as *mut lvgl_sys::lv_color_t;
             if !b1.is_null() && !b2.is_null() {
                 log::info!("LVGL draw bufs: full-screen PSRAM ({} px each)", DRAW_BUF_FULL);
