@@ -18,7 +18,8 @@ extern "C" {
 
 const LCD_W: u32 = 466;
 const LCD_H: u32 = 466;
-const DRAW_BUF_PIXELS: usize = LCD_W as usize * 100; // 100 rows (~91KB DMA) for smoother animation
+const DRAW_BUF_FULL: usize = LCD_W as usize * LCD_H as usize; // full screen (~434KB, needs PSRAM)
+const DRAW_BUF_FALLBACK: usize = LCD_W as usize * 100;        // 100 rows (~91KB, DMA SRAM)
 
 // Touch state written by the main loop, read by the LVGL indev callback.
 // Both run on the same thread (indev cb is called inside lv_timer_handler),
@@ -129,16 +130,39 @@ fn main() {
         // ── 2. LVGL init ──────────────────────────────────────────────────────
         lvgl_sys::lv_init();
 
-        // ── 3. Two DMA-capable pixel buffers for double-buffering ─────────────
-        let buf1 = esp_idf_svc::sys::heap_caps_malloc(
-            DRAW_BUF_PIXELS * core::mem::size_of::<lvgl_sys::lv_color_t>(),
-            esp_idf_svc::sys::MALLOC_CAP_DMA,
-        ) as *mut lvgl_sys::lv_color_t;
-        let buf2 = esp_idf_svc::sys::heap_caps_malloc(
-            DRAW_BUF_PIXELS * core::mem::size_of::<lvgl_sys::lv_color_t>(),
-            esp_idf_svc::sys::MALLOC_CAP_DMA,
-        ) as *mut lvgl_sys::lv_color_t;
-        assert!(!buf1.is_null() && !buf2.is_null(), "LVGL draw buf alloc failed");
+        // ── 3. Two pixel buffers for double-buffering ─────────────────────────
+        // Prefer full-screen buffers from PSRAM (requires CONFIG_SPIRAM=y).
+        // Fall back to 100-row buffers from internal DMA SRAM if PSRAM is absent.
+        let pixel_size = core::mem::size_of::<lvgl_sys::lv_color_t>();
+        let (buf1, buf2, buf_pixels) = {
+            let b1 = esp_idf_svc::sys::heap_caps_malloc(
+                DRAW_BUF_FULL * pixel_size,
+                esp_idf_svc::sys::MALLOC_CAP_SPIRAM,
+            ) as *mut lvgl_sys::lv_color_t;
+            let b2 = esp_idf_svc::sys::heap_caps_malloc(
+                DRAW_BUF_FULL * pixel_size,
+                esp_idf_svc::sys::MALLOC_CAP_SPIRAM,
+            ) as *mut lvgl_sys::lv_color_t;
+            if !b1.is_null() && !b2.is_null() {
+                log::info!("LVGL draw bufs: full-screen PSRAM ({} px each)", DRAW_BUF_FULL);
+                (b1, b2, DRAW_BUF_FULL)
+            } else {
+                // Free any partial PSRAM alloc before falling back
+                if !b1.is_null() { esp_idf_svc::sys::free(b1 as *mut _); }
+                if !b2.is_null() { esp_idf_svc::sys::free(b2 as *mut _); }
+                let fb1 = esp_idf_svc::sys::heap_caps_malloc(
+                    DRAW_BUF_FALLBACK * pixel_size,
+                    esp_idf_svc::sys::MALLOC_CAP_DMA,
+                ) as *mut lvgl_sys::lv_color_t;
+                let fb2 = esp_idf_svc::sys::heap_caps_malloc(
+                    DRAW_BUF_FALLBACK * pixel_size,
+                    esp_idf_svc::sys::MALLOC_CAP_DMA,
+                ) as *mut lvgl_sys::lv_color_t;
+                assert!(!fb1.is_null() && !fb2.is_null(), "LVGL draw buf alloc failed");
+                log::info!("LVGL draw bufs: fallback DMA SRAM ({} px each)", DRAW_BUF_FALLBACK);
+                (fb1, fb2, DRAW_BUF_FALLBACK)
+            }
+        };
 
         // ── 4. Draw buffer struct (leaked: LVGL holds a pointer to it) ────────
         let disp_buf: &'static mut lvgl_sys::lv_disp_draw_buf_t =
@@ -147,7 +171,7 @@ fn main() {
             disp_buf,
             buf1 as *mut _,
             buf2 as *mut _,
-            DRAW_BUF_PIXELS as u32,
+            buf_pixels as u32,
         );
 
         // ── 5. Display driver (leaked: LVGL 8.x stores the pointer, not a copy) ─
