@@ -30,7 +30,7 @@ CROSS_COMPILE = "xtensa-esp32s3-elf"
 CFLAGS_xtensa_esp32s3_espidf="-mlongcalls"
 
 # Required for lvgl to build otherwise you will get string.h not found.
-# Verfiy path and toolchain version being used on your PC (esp-14.2.0_20240906)
+# Toolchain version: esp-15.2.0_20250920 (from espup; check ~/export-esp.sh for your version)
 TARGET_C_INCLUDE_PATH = "/Users/joel.chan/.rustup/toolchains/esp/xtensa-esp-elf/esp-15.2.0_20250920/xtensa-esp-elf/xtensa-esp-elf/include"
 C_INCLUDE_PATH = "/Users/joel.chan/.rustup/toolchains/esp/xtensa-esp-elf/esp-15.2.0_20250920/xtensa-esp-elf/xtensa-esp-elf/include"
 # Fix for bindgen 0.64.0 bug on Apple Silicon: clang reports "arm64-apple-darwin"
@@ -39,4 +39,14 @@ C_INCLUDE_PATH = "/Users/joel.chan/.rustup/toolchains/esp/xtensa-esp-elf/esp-15.
 # The target-specific env var (checked before the global one) scopes this fix to HOST builds
 # only, so ESP32 cross-compilation bindgen is unaffected.
 BINDGEN_EXTRA_CLANG_ARGS_aarch64_apple_darwin = "--target=aarch64-apple-darwin"
+
+# Required for bindgen to find libclang when parsing LVGL headers for the ESP32 target.
+# espup installs the xtensa-capable clang; run `espup install` if this path doesn't exist.
+LIBCLANG_PATH = "/Users/joel.chan/.rustup/toolchains/esp/xtensa-esp32-elf-clang/esp-20.1.1_20250829/esp-clang/lib"
+
+# C compiler for the lvgl-sys TARGET build (cc crate cross-compilation).
+# Points to the espup-installed xtensa toolchain. Update this path if your
+# espup toolchain is at a different location (run `cat ~/export-esp.sh` to find it).
+# Alternatively, `source ~/export-esp.sh` before running `cargo build` and remove this line.
+CC_xtensa_esp32s3_espidf = "/Users/joel.chan/.rustup/toolchains/esp/xtensa-esp-elf/esp-15.2.0_20250920/xtensa-esp-elf/bin/xtensa-esp32s3-elf-gcc"
 
