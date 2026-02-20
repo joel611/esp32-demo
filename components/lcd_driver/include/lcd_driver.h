@@ -16,14 +16,20 @@ esp_err_t lcd_driver_init(void);
 /**
  * Flush pixel data to the display.
  * Blocks until the DMA transfer completes.
- *
- * @param x1     Left column (inclusive)
- * @param y1     Top row (inclusive)
- * @param x2     Right column (exclusive, i.e. x2 = area.x2 + 1)
- * @param y2     Bottom row (exclusive)
- * @param data   RGB565 pixel buffer
  */
 void lcd_draw_bitmap(int x1, int y1, int x2, int y2, const void *data);
+
+/**
+ * Start a pixel DMA transfer and return immediately (non-blocking).
+ * Call lcd_wait_flush_done() before the next draw or before touching the buffer.
+ */
+void lcd_draw_bitmap_async(int x1, int y1, int x2, int y2, const void *data);
+
+/**
+ * Block until the most recent lcd_draw_bitmap_async() transfer is complete.
+ * No-op if no transfer is in flight.
+ */
+void lcd_wait_flush_done(void);
 
 #ifdef __cplusplus
 }

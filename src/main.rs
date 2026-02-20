@@ -10,12 +10,15 @@ use esp_idf_svc::hal::units::Hertz;
 
 extern "C" {
     fn lcd_driver_init() -> i32;
+    #[allow(dead_code)]
     fn lcd_draw_bitmap(x1: i32, y1: i32, x2: i32, y2: i32, data: *const core::ffi::c_void);
+    fn lcd_draw_bitmap_async(x1: i32, y1: i32, x2: i32, y2: i32, data: *const core::ffi::c_void);
+    fn lcd_wait_flush_done();
 }
 
 const LCD_W: u32 = 466;
 const LCD_H: u32 = 466;
-const DRAW_BUF_PIXELS: usize = LCD_W as usize * 20; // 20 rows per flush
+const DRAW_BUF_PIXELS: usize = LCD_W as usize * 100; // 100 rows (~91KB DMA) for smoother animation
 
 // Touch state written by the main loop, read by the LVGL indev callback.
 // Both run on the same thread (indev cb is called inside lv_timer_handler),
@@ -28,19 +31,25 @@ static TOUCH_PRESSED: AtomicBool = AtomicBool::new(false);
 static mut SCREEN1: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
 static mut SCREEN2: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
 
-// LVGL flush callback: called by LVGL when a region needs to be sent to the display.
+// LVGL flush callback — double-buffer async DMA pattern:
+//   1. Wait for the previous async DMA to finish (no-op on first call).
+//   2. Start a new async DMA for the current buffer.
+//   3. Immediately signal flush_ready so LVGL can render into the OTHER buffer
+//      while the DMA for this buffer runs in the background.
 // lv_area_t coords are inclusive; lcd_draw_bitmap expects exclusive x2/y2.
 unsafe extern "C" fn lvgl_flush_cb(
     disp_drv: *mut lvgl_sys::lv_disp_drv_t,
     area: *const lvgl_sys::lv_area_t,
     color_p: *mut lvgl_sys::lv_color_t,
 ) {
+    lcd_wait_flush_done();
     let x1 = (*area).x1 as i32;
     let y1 = (*area).y1 as i32;
     let x2 = (*area).x2 as i32 + 1;
     let y2 = (*area).y2 as i32 + 1;
-    lcd_draw_bitmap(x1, y1, x2, y2, color_p as *const _);
-    // lcd_draw_bitmap blocks until DMA completes, so we can signal ready immediately.
+    lcd_draw_bitmap_async(x1, y1, x2, y2, color_p as *const _);
+    // Signal LVGL immediately: with two buffers, this swaps buf_act so LVGL
+    // can render the next chunk into the other buffer concurrently with the DMA.
     lvgl_sys::lv_disp_flush_ready(disp_drv);
 }
 
@@ -74,7 +83,7 @@ unsafe extern "C" fn gesture_cb(e: *mut lvgl_sys::lv_event_t) {
         lvgl_sys::lv_scr_load_anim(
             SCREEN2,
             lvgl_sys::lv_scr_load_anim_t_LV_SCR_LOAD_ANIM_MOVE_LEFT,
-            300,
+            150,
             0,
             false,
         );
@@ -82,7 +91,7 @@ unsafe extern "C" fn gesture_cb(e: *mut lvgl_sys::lv_event_t) {
         lvgl_sys::lv_scr_load_anim(
             SCREEN1,
             lvgl_sys::lv_scr_load_anim_t_LV_SCR_LOAD_ANIM_MOVE_RIGHT,
-            300,
+            150,
             0,
             false,
         );
@@ -120,20 +129,24 @@ fn main() {
         // ── 2. LVGL init ──────────────────────────────────────────────────────
         lvgl_sys::lv_init();
 
-        // ── 3. DMA-capable pixel buffer ───────────────────────────────────────
-        let buf = esp_idf_svc::sys::heap_caps_malloc(
+        // ── 3. Two DMA-capable pixel buffers for double-buffering ─────────────
+        let buf1 = esp_idf_svc::sys::heap_caps_malloc(
             DRAW_BUF_PIXELS * core::mem::size_of::<lvgl_sys::lv_color_t>(),
             esp_idf_svc::sys::MALLOC_CAP_DMA,
         ) as *mut lvgl_sys::lv_color_t;
-        assert!(!buf.is_null(), "LVGL draw buf alloc failed");
+        let buf2 = esp_idf_svc::sys::heap_caps_malloc(
+            DRAW_BUF_PIXELS * core::mem::size_of::<lvgl_sys::lv_color_t>(),
+            esp_idf_svc::sys::MALLOC_CAP_DMA,
+        ) as *mut lvgl_sys::lv_color_t;
+        assert!(!buf1.is_null() && !buf2.is_null(), "LVGL draw buf alloc failed");
 
         // ── 4. Draw buffer struct (leaked: LVGL holds a pointer to it) ────────
         let disp_buf: &'static mut lvgl_sys::lv_disp_draw_buf_t =
             Box::leak(Box::new(core::mem::zeroed()));
         lvgl_sys::lv_disp_draw_buf_init(
             disp_buf,
-            buf as *mut _,
-            core::ptr::null_mut(),
+            buf1 as *mut _,
+            buf2 as *mut _,
             DRAW_BUF_PIXELS as u32,
         );
 
