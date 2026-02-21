@@ -7,25 +7,24 @@
 include!(concat!(env!("OUT_DIR"), "/spaceship_bg.rs"));
 
 // ─── Sprite dimensions ───────────────────────────────────────────────────────
-pub const CREW_W: i32 = 32;
+pub const CREW_W: i32 = 48;
 pub const CREW_H: i32 = 64;
-pub const CMD_W:  i32 = 40;
-pub const CMD_H:  i32 = 72;
+pub const CMD_W:  i32 = 56;
+pub const CMD_H:  i32 = 80;
 pub const BLINK_W: i32 = 20;
 pub const BLINK_H: i32 = 10;
 
 // ─── Color constants (byte-swapped RGB565, LV_COLOR_16_SWAP=1) ──────────────
-const BG_DARK:    u16 = 0x0819;
-const CONSOLE:    u16 = 0x6719;
+const BG_DARK:    u16 = 0x0819; // dark navy floor — used as sprite background fill
 const SCREEN_BLU: u16 = 0x5F06;
 const SCREEN_GRN: u16 = 0xF107;
+const UNIFORM_DK: u16 = 0x2121; // deep navy uniform
 #[allow(dead_code)]
-const WARN_RED:   u16 = 0x00F9;
-const METAL:      u16 = 0x1453;
-const SKIN:       u16 = rgb565_const(0xf0, 0xc8, 0x88);
-const UNIFORM:    u16 = 0xAC29;
-#[allow(dead_code)]
-const WALL:       u16 = 0xAC29;
+const UNIFORM_LT: u16 = 0x4229; // lighter uniform detail
+const SKIN:       u16 = rgb565_const(0xdf, 0xa6, 0x8d);
+const HAIR_BROWN: u16 = 0x2143;
+const GOLD_TRIM:  u16 = 0x05E6; // command yellow/gold
+const CONSOLE_GY: u16 = 0x9492; // console metal grey
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 const fn in_rect(x: i32, y: i32, x1: i32, y1: i32, x2: i32, y2: i32) -> bool {
@@ -47,101 +46,59 @@ const fn rgb565_const(r: u8, g: u8, b: u8) -> u16 {
     (rgb >> 8) | (rgb << 8)
 }
 
-// ─── Crew sprites (32×64) ────────────────────────────────────────────────────
-// Top-down seated crew figure, 32×64 sprite.
-// Figure occupies y=20..64. y=0..19 is background fill (CONSOLE color so it
-// blends with the console panel they're seated at).
-// Frame A: upright at console. Frame B: leaned 1px forward (head at y+1).
-const fn crew_pixel(x: i32, y: i32, lean: bool) -> u16 {
-    let offset = if lean { 1 } else { 0 };
+// ─── Crew sprites (48×64) ────────────────────────────────────────────────────
+// Top-down view of back-of-head and shoulders; crew face away toward consoles.
+// Transparent areas filled with BG_DARK (matches dark floor/wall background).
+const fn crew_pixel(x: i32, y: i32) -> u16 {
+    let in_shoulders = in_rect(x, y, 8, 35, 40, 55);
+    let in_neck      = in_rect(x, y, 18, 30, 30, 35);
+    let in_head      = in_ellipse(x, y, 24, 25, 10, 10);
+    let in_hair      = in_ellipse(x, y, 24, 22, 10, 7);
+    let in_chair     = in_rect(x, y, 12, 56, 36, 63);
 
-    // Chair/seat area (very bottom, y=55..63)
-    let in_chair = in_rect(x, y, 8, 55, 23, 63);
-
-    // Torso/body (y=34+offset..54)
-    let in_body = in_rect(x, y, 6, 34 + offset, 25, 54);
-
-    // Shoulders — wider than body (y=33+offset..36+offset)
-    let in_shoulders = in_rect(x, y, 4, 33 + offset, 27, 36 + offset);
-
-    // Head — 8×8 ellipse centered at (15, 26+offset)
-    let in_head = in_ellipse(x, y, 15, 26 + offset, 4, 4);
-
-    // Hair — top 2 rows of head (dark)
-    let in_hair = in_ellipse(x, y, 15, 24 + offset, 4, 2);
-
-    // Face detail — tiny eyes at y=26+offset, x=12..13 and x=16..17
-    let in_eyes = y == 26 + offset && (
-        (x == 12 || x == 13) || (x == 16 || x == 17)
-    );
-
-    // Console fill above figure
-    let in_bg = y < 20;
-
-    if in_bg           { CONSOLE }
-    else if in_head    { if in_hair { UNIFORM } else if in_eyes { 0x0000u16 } else { SKIN } }
-    else if in_shoulders || in_body { UNIFORM }
-    else if in_chair   { METAL }
-    else               { CONSOLE }
+    if in_hair           { HAIR_BROWN }
+    else if in_head      { SKIN }
+    else if in_neck      { SKIN }
+    else if in_shoulders { UNIFORM_DK }
+    else if in_chair     { CONSOLE_GY }
+    else                 { BG_DARK }
 }
 
-const fn pixel_crew_a(x: i32, y: i32) -> u16 { crew_pixel(x, y, false) }
-const fn pixel_crew_b(x: i32, y: i32) -> u16 { crew_pixel(x, y, true) }
+const fn pixel_crew_a(x: i32, y: i32) -> u16 { crew_pixel(x, y) }
+const fn pixel_crew_b(x: i32, y: i32) -> u16 { crew_pixel(x, y) }
 
-// ─── Commander sprites (40×72) ───────────────────────────────────────────────
-// Standing commander figure, 40×72 sprite, top-down slightly angled.
-// Figure centered horizontally; y=0..71 active.
-// BG_DARK fill for transparent areas.
+// ─── Commander sprites (56×80) ───────────────────────────────────────────────
+// Front-facing commander with peaked hat, epaulets, and belt.
+// Transparent areas filled with BG_DARK. `frame` reserved for future animation.
 const fn cmd_pixel(x: i32, y: i32, frame: u8) -> u16 {
-    let gold: u16 = rgb565_const(0xff, 0xc0, 0x00); // gold command stripe
+    let cx = 28; // horizontal center
 
-    // Head — ellipse centered at (20, 10), rx=6, ry=6
-    let in_head = in_ellipse(x, y, 20, 10, 6, 6);
-    let in_hair = in_ellipse(x, y, 20, 7, 6, 3);
-    let in_eyes = y == 11 && ((x == 17 || x == 18) || (x == 22 || x == 23));
+    // Hat
+    let in_hat_top    = in_rect(x, y, cx - 14, 5, cx + 14, 12);
+    let in_hat_brim   = in_rect(x, y, cx - 16, 12, cx + 16, 15);
+    let in_hat_emblem = in_rect(x, y, cx - 2, 7, cx + 2, 10);
 
-    // Shoulders — rect x=8..31, y=18..22
-    let in_shoulders = in_rect(x, y, 8, 18, 31, 22);
+    // Face
+    let in_face = in_ellipse(x, y, cx, 22, 12, 10);
+    let in_eyes = y == 23 && (x == cx - 5 || x == cx + 5);
 
-    // Torso — rect x=11..28, y=22..50
-    let in_torso = in_rect(x, y, 11, 22, 28, 50);
+    // Body
+    let in_shoulders = in_rect(x, y, cx - 22, 32, cx + 22, 42);
+    let in_epaulets  = (x < cx - 18 || x > cx + 18) && in_rect(x, y, 0, 32, 60, 36);
+    let in_torso     = in_rect(x, y, cx - 15, 42, cx + 15, 70);
+    let in_belt      = in_rect(x, y, cx - 16, 58, cx + 16, 62);
 
-    // Command stripe (gold, left chest) — x=11..14, y=24..40
-    let in_stripe = in_rect(x, y, 11, 24, 14, 40);
+    // Suppress unused frame warning (reserved for future arm-pose animation)
+    let _ = frame;
 
-    // Legs — two columns: x=12..18 and x=21..27, y=51..68
-    let in_legs = in_rect(x, y, 12, 51, 18, 68) || in_rect(x, y, 21, 51, 27, 68);
-
-    // Feet (darker) — y=69..71
-    let in_feet = y >= 69 && (in_rect(x, y, 11, 69, 18, 71) || in_rect(x, y, 21, 69, 27, 71));
-
-    // Arms: frame-dependent
-    // Frame A — arms at sides: x=8..10 and x=29..31, y=22..45
-    let in_arm_l_a = in_rect(x, y, 8, 22, 10, 45);
-    let in_arm_r_a = in_rect(x, y, 29, 22, 31, 45);
-    // Frame B — pointing left: left arm extends further left (x=1..10, y=28..31)
-    let in_arm_l_b = in_rect(x, y, 1, 28, 10, 31);
-    let in_arm_r_b = in_arm_r_a;
-    // Frame C — pointing right: right arm extends further right (x=29..38, y=28..31)
-    let in_arm_l_c = in_arm_l_a;
-    let in_arm_r_c = in_rect(x, y, 29, 28, 38, 31);
-
-    let in_arm_l = match frame { 0 => in_arm_l_a, 1 => in_arm_l_b, _ => in_arm_l_c };
-    let in_arm_r = match frame { 0 => in_arm_r_a, 1 => in_arm_r_b, _ => in_arm_r_c };
-
-    if in_head {
-        if in_hair { UNIFORM }
-        else if in_eyes { 0x0000 }
-        else { SKIN }
-    } else if in_torso || in_shoulders || in_arm_l || in_arm_r {
-        if in_stripe { gold } else { UNIFORM }
-    } else if in_legs {
-        UNIFORM
-    } else if in_feet {
-        METAL
-    } else {
-        BG_DARK
-    }
+    if in_hat_emblem                         { GOLD_TRIM }
+    else if in_hat_top || in_hat_brim        { UNIFORM_DK }
+    else if in_eyes                          { BG_DARK }
+    else if in_face                          { SKIN }
+    else if in_epaulets                      { GOLD_TRIM }
+    else if in_belt                          { BG_DARK }
+    else if in_shoulders || in_torso         { UNIFORM_DK }
+    else                                     { BG_DARK }
 }
 
 const fn pixel_cmd_a(x: i32, y: i32) -> u16 { cmd_pixel(x, y, 0) }

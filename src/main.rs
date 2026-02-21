@@ -274,14 +274,14 @@ fn main() {
         CREW_DSC_B = crew_b_dsc as *const _;
 
         // ── Crew widgets: (x, y) top-left of sprite ───────────────────────────────
-        // Positions relative to background image (absolute display coords).
-        // Crew #3 (top-center): center sprite at (233, 158)
-        // Crew #1 (left):       center sprite at ( 90, 240)
-        // Crew #2 (right):      center sprite at (376, 240)
+        // Positions: center sprite over these display coords.
+        // Crew #1 (left):        center at ( 80, 100)
+        // Crew #3 (back-center): center at (210,  80)
+        // Crew #2 (right):       center at (340, 100)
         let crew_positions: [(i16, i16); 3] = [
-            ((233 - spaceship::CREW_W / 2) as i16, (158 - spaceship::CREW_H / 2) as i16), // crew #3 top-center
-            (( 90 - spaceship::CREW_W / 2) as i16, (240 - spaceship::CREW_H / 2) as i16), // crew #1 left
-            ((376 - spaceship::CREW_W / 2) as i16, (240 - spaceship::CREW_H / 2) as i16), // crew #2 right
+            (( 80 - spaceship::CREW_W / 2) as i16, (100 - spaceship::CREW_H / 2) as i16), // crew #1 left
+            ((210 - spaceship::CREW_W / 2) as i16, ( 80 - spaceship::CREW_H / 2) as i16), // crew #3 back-center
+            ((340 - spaceship::CREW_W / 2) as i16, (100 - spaceship::CREW_H / 2) as i16), // crew #2 right
         ];
         for i in 0..3 {
             let w = lvgl_sys::lv_img_create(SCREEN1);
@@ -298,12 +298,12 @@ fn main() {
         CMD_DSC_B = cmd_b_dsc as *const _;
         CMD_DSC_C = cmd_c_dsc as *const _;
 
-        // Commander center at (233, 390); sprite top-left:
+        // Commander center at (205, 340); sprite top-left:
         let cmd_widget = lvgl_sys::lv_img_create(SCREEN1);
         lvgl_sys::lv_img_set_src(cmd_widget, cmd_a_dsc as *mut lvgl_sys::lv_img_dsc_t as *const _);
         lvgl_sys::lv_obj_set_pos(cmd_widget,
-            (233 - spaceship::CMD_W / 2) as i16,
-            (390 - spaceship::CMD_H / 2) as i16,
+            (205 - spaceship::CMD_W / 2) as i16,
+            (340 - spaceship::CMD_H / 2) as i16,
         );
         CMD_WIDGET = cmd_widget;
 
