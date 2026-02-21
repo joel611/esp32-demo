@@ -2,6 +2,7 @@ use std::time::Duration;
 
 mod ft3168;
 mod safe_area;
+mod sprites;
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
