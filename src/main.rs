@@ -2,6 +2,7 @@ use std::time::Duration;
 
 mod ft3168;
 mod safe_area;
+mod spaceship;
 mod sprites;
 
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -32,11 +33,25 @@ static TOUCH_PRESSED: AtomicBool = AtomicBool::new(false);
 // Screen object pointers. Written once during init, read by gesture callback.
 static mut SCREEN1: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
 static mut SCREEN2: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
-// Animation state — written once during init, accessed only on the main thread.
-static mut IMG_WIDGET: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
-static mut FRAME_IDX: u8 = 0;
-static mut IMG_A_DSC: *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
-static mut IMG_B_DSC: *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
+
+// Spaceship animation state — single-thread, written once during init
+static mut CREW_WIDGETS: [*mut lvgl_sys::lv_obj_t; 3] = [core::ptr::null_mut(); 3];
+static mut CMD_WIDGET: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
+static mut BLINK_WIDGET: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
+
+static mut CREW_FRAME: u8 = 0;
+static mut CMD_FRAME: u8 = 0;
+static mut BLINK_FRAME: u8 = 0;
+
+// Image descriptors — must be 'static (LVGL holds raw pointers)
+static mut CREW_DSC_A: *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
+static mut CREW_DSC_B: *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
+static mut CMD_DSC_A:  *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
+static mut CMD_DSC_B:  *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
+static mut CMD_DSC_C:  *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
+static mut BLINK_DSC_A: *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
+static mut BLINK_DSC_B: *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
+static mut BG_DSC: *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
 
 // LVGL flush callback — double-buffer async DMA pattern:
 //   1. Wait for the previous async DMA to finish (no-op on first call).
@@ -108,25 +123,44 @@ unsafe extern "C" fn gesture_cb(e: *mut lvgl_sys::lv_event_t) {
     let _ = e;
 }
 
-/// LVGL timer callback — fires every 600 ms to toggle the sprite frame.
-/// Called by lv_timer_handler() on the main thread; all statics are single-thread.
-unsafe extern "C" fn anim_timer_cb(_timer: *mut lvgl_sys::lv_timer_t) {
-    FRAME_IDX = 1 - FRAME_IDX;
-    log::debug!("anim_timer: frame={}", FRAME_IDX);   // ← add this line
-    let src = if FRAME_IDX == 0 { IMG_A_DSC } else { IMG_B_DSC };
-    lvgl_sys::lv_img_set_src(IMG_WIDGET, src as *const _);
-}
-
-/// Construct an lv_img_dsc_t pointing at a static 64×64 RGB565 pixel array.
-/// The 'static lifetime guarantees the pointer outlives LVGL's display lifetime.
-fn make_img_dsc(pixels: &'static [u16; 4096]) -> lvgl_sys::lv_img_dsc_t {
+/// Build an lv_img_dsc_t for a u16 RGB565 pixel array.
+/// w, h: sprite dimensions in pixels.
+fn make_dsc(pixels: &'static [u16], w: u32, h: u32) -> lvgl_sys::lv_img_dsc_t {
     let mut dsc = lvgl_sys::lv_img_dsc_t::default();
-    dsc.header.set_cf(lvgl_sys::LV_IMG_CF_TRUE_COLOR as u32); // = 4
-    dsc.header.set_w(64);
-    dsc.header.set_h(64);
-    dsc.data_size = (64 * 64 * core::mem::size_of::<u16>()) as u32;
+    dsc.header.set_cf(lvgl_sys::LV_IMG_CF_TRUE_COLOR as u32);
+    dsc.header.set_w(w);
+    dsc.header.set_h(h);
+    dsc.data_size = (w * h * core::mem::size_of::<u16>() as u32) as u32;
     dsc.data = pixels.as_ptr() as *const u8;
     dsc
+}
+
+/// Crew animation timer — fires every 600 ms, cycles through 2 frames.
+/// All 3 crew widgets share the same sprite frames (same body shape).
+unsafe extern "C" fn crew_timer_cb(_timer: *mut lvgl_sys::lv_timer_t) {
+    CREW_FRAME = 1 - CREW_FRAME;
+    let src = if CREW_FRAME == 0 { CREW_DSC_A } else { CREW_DSC_B };
+    for i in 0..3 {
+        lvgl_sys::lv_img_set_src(CREW_WIDGETS[i], src as *const _);
+    }
+}
+
+/// Commander animation timer — fires every 800 ms, cycles A→B→C→A.
+unsafe extern "C" fn cmd_timer_cb(_timer: *mut lvgl_sys::lv_timer_t) {
+    CMD_FRAME = (CMD_FRAME + 1) % 3;
+    let src = match CMD_FRAME {
+        0 => CMD_DSC_A,
+        1 => CMD_DSC_B,
+        _ => CMD_DSC_C,
+    };
+    lvgl_sys::lv_img_set_src(CMD_WIDGET, src as *const _);
+}
+
+/// Console blink timer — fires every 1200 ms, toggles between two colors.
+unsafe extern "C" fn blink_timer_cb(_timer: *mut lvgl_sys::lv_timer_t) {
+    BLINK_FRAME = 1 - BLINK_FRAME;
+    let src = if BLINK_FRAME == 0 { BLINK_DSC_A } else { BLINK_DSC_B };
+    lvgl_sys::lv_img_set_src(BLINK_WIDGET, src as *const _);
 }
 
 fn main() {
@@ -205,39 +239,91 @@ fn main() {
         // Screen 1: the default screen LVGL created when the display was registered.
         SCREEN1 = lvgl_sys::lv_disp_get_scr_act(lvgl_sys::lv_disp_get_default());
 
-        // ── Screen 1: Pokemon sprite scene ───────────────────────────────────────
+        // ── Screen 1: Spaceship bridge scene ─────────────────────────────────────
 
-        // Black background
+        // Black base background for the screen
         lvgl_sys::lv_obj_set_style_bg_color(
             SCREEN1,
-            lvgl_sys::_LV_COLOR_MAKE(0x00, 0x00, 0x00),
+            lvgl_sys::_LV_COLOR_MAKE(0x1a, 0x20, 0x40),
             lvgl_sys::LV_STATE_DEFAULT,
         );
 
-        // Construct and leak image descriptors (LVGL holds raw pointer; must be 'static)
-        let img_a = Box::leak(Box::new(make_img_dsc(&sprites::PIKACHU_FRAME_A)));
-        let img_b = Box::leak(Box::new(make_img_dsc(&sprites::PIKACHU_FRAME_B)));
-        IMG_A_DSC = img_a as *const _;
-        IMG_B_DSC = img_b as *const _;
+        // ── Background image (466×466) ────────────────────────────────────────────
+        let bg_dsc = Box::leak(Box::new(make_dsc(
+            &spaceship::BG_FRAME,
+            466,
+            466,
+        )));
+        BG_DSC = bg_dsc as *const _;
+        let bg_img = lvgl_sys::lv_img_create(SCREEN1);
+        lvgl_sys::lv_img_set_src(bg_img, bg_dsc as *mut lvgl_sys::lv_img_dsc_t as *const _);
+        lvgl_sys::lv_obj_set_pos(bg_img, 0, 0);
 
-        // Image widget — centered, shifted up 30 px so the name label fits below
-        let img_widget = lvgl_sys::lv_img_create(SCREEN1);
-        lvgl_sys::lv_img_set_src(img_widget, img_a as *mut lvgl_sys::lv_img_dsc_t as *const _);
-        lvgl_sys::lv_obj_align(img_widget, lvgl_sys::LV_ALIGN_CENTER as u8, 0, -30);
-        IMG_WIDGET = img_widget;
+        // ── Crew descriptors (shared frames for all 3 crew) ───────────────────────
+        let crew_a_dsc = Box::leak(Box::new(make_dsc(
+            &spaceship::CREW_FRAME_A,
+            spaceship::CREW_W as u32,
+            spaceship::CREW_H as u32,
+        )));
+        let crew_b_dsc = Box::leak(Box::new(make_dsc(
+            &spaceship::CREW_FRAME_B,
+            spaceship::CREW_W as u32,
+            spaceship::CREW_H as u32,
+        )));
+        CREW_DSC_A = crew_a_dsc as *const _;
+        CREW_DSC_B = crew_b_dsc as *const _;
 
-        // Name label — yellow, 50 px below the center point
-        let name_label = lvgl_sys::lv_label_create(SCREEN1);
-        lvgl_sys::lv_label_set_text(name_label, b"PIKACHU\0".as_ptr() as *const i8);
-        lvgl_sys::lv_obj_set_style_text_color(
-            name_label,
-            lvgl_sys::_LV_COLOR_MAKE(0xFF, 0xFF, 0x00),
-            lvgl_sys::LV_STATE_DEFAULT,
+        // ── Crew widgets: (x, y) top-left of sprite ───────────────────────────────
+        // Positions relative to background image (absolute display coords).
+        // Crew #3 (top-center): center sprite at (233, 158)
+        // Crew #1 (left):       center sprite at ( 90, 240)
+        // Crew #2 (right):      center sprite at (376, 240)
+        let crew_positions: [(i16, i16); 3] = [
+            ((233 - spaceship::CREW_W / 2) as i16, (158 - spaceship::CREW_H / 2) as i16), // crew #3 top-center
+            (( 90 - spaceship::CREW_W / 2) as i16, (240 - spaceship::CREW_H / 2) as i16), // crew #1 left
+            ((376 - spaceship::CREW_W / 2) as i16, (240 - spaceship::CREW_H / 2) as i16), // crew #2 right
+        ];
+        for i in 0..3 {
+            let w = lvgl_sys::lv_img_create(SCREEN1);
+            lvgl_sys::lv_img_set_src(w, crew_a_dsc as *mut lvgl_sys::lv_img_dsc_t as *const _);
+            lvgl_sys::lv_obj_set_pos(w, crew_positions[i].0, crew_positions[i].1);
+            CREW_WIDGETS[i] = w;
+        }
+
+        // ── Commander descriptor and widget ──────────────────────────────────────
+        let cmd_a_dsc = Box::leak(Box::new(make_dsc(&spaceship::CMD_FRAME_A, spaceship::CMD_W as u32, spaceship::CMD_H as u32)));
+        let cmd_b_dsc = Box::leak(Box::new(make_dsc(&spaceship::CMD_FRAME_B, spaceship::CMD_W as u32, spaceship::CMD_H as u32)));
+        let cmd_c_dsc = Box::leak(Box::new(make_dsc(&spaceship::CMD_FRAME_C, spaceship::CMD_W as u32, spaceship::CMD_H as u32)));
+        CMD_DSC_A = cmd_a_dsc as *const _;
+        CMD_DSC_B = cmd_b_dsc as *const _;
+        CMD_DSC_C = cmd_c_dsc as *const _;
+
+        // Commander center at (233, 390); sprite top-left:
+        let cmd_widget = lvgl_sys::lv_img_create(SCREEN1);
+        lvgl_sys::lv_img_set_src(cmd_widget, cmd_a_dsc as *mut lvgl_sys::lv_img_dsc_t as *const _);
+        lvgl_sys::lv_obj_set_pos(cmd_widget,
+            (233 - spaceship::CMD_W / 2) as i16,
+            (390 - spaceship::CMD_H / 2) as i16,
         );
-        lvgl_sys::lv_obj_align(name_label, lvgl_sys::LV_ALIGN_CENTER as u8, 0, 50);
+        CMD_WIDGET = cmd_widget;
 
-        // 600 ms timer — drives the idle animation frame toggle
-        lvgl_sys::lv_timer_create(Some(anim_timer_cb), 600, core::ptr::null_mut());
+        // ── Console blink widget ──────────────────────────────────────────────────
+        let blink_a_dsc = Box::leak(Box::new(make_dsc(&spaceship::BLINK_FRAME_A, spaceship::BLINK_W as u32, spaceship::BLINK_H as u32)));
+        let blink_b_dsc = Box::leak(Box::new(make_dsc(&spaceship::BLINK_FRAME_B, spaceship::BLINK_W as u32, spaceship::BLINK_H as u32)));
+        BLINK_DSC_A = blink_a_dsc as *const _;
+        BLINK_DSC_B = blink_b_dsc as *const _;
+
+        // Position inside the back-center console screen area (x:183..283, y:30..95)
+        // Blink widget at (193, 35) — 20×10 overlay
+        let blink_widget = lvgl_sys::lv_img_create(SCREEN1);
+        lvgl_sys::lv_img_set_src(blink_widget, blink_a_dsc as *mut lvgl_sys::lv_img_dsc_t as *const _);
+        lvgl_sys::lv_obj_set_pos(blink_widget, 193, 35);
+        BLINK_WIDGET = blink_widget;
+
+        // ── Animation timers ──────────────────────────────────────────────────────
+        lvgl_sys::lv_timer_create(Some(crew_timer_cb),  600,  core::ptr::null_mut());
+        lvgl_sys::lv_timer_create(Some(cmd_timer_cb),   800,  core::ptr::null_mut());
+        lvgl_sys::lv_timer_create(Some(blink_timer_cb), 1200, core::ptr::null_mut());
 
         // Screen 2: new screen object (parent = null → creates a standalone screen)
         SCREEN2 = lvgl_sys::lv_obj_create(core::ptr::null_mut());
