@@ -32,6 +32,11 @@ static TOUCH_PRESSED: AtomicBool = AtomicBool::new(false);
 // Screen object pointers. Written once during init, read by gesture callback.
 static mut SCREEN1: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
 static mut SCREEN2: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
+// Animation state — written once during init, accessed only on the main thread.
+static mut IMG_WIDGET: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
+static mut FRAME_IDX: u8 = 0;
+static mut IMG_A_DSC: *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
+static mut IMG_B_DSC: *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
 
 // LVGL flush callback — double-buffer async DMA pattern:
 //   1. Wait for the previous async DMA to finish (no-op on first call).
@@ -101,6 +106,14 @@ unsafe extern "C" fn gesture_cb(e: *mut lvgl_sys::lv_event_t) {
 
     // Suppress unused parameter warning
     let _ = e;
+}
+
+/// LVGL timer callback — fires every 600 ms to toggle the sprite frame.
+/// Called by lv_timer_handler() on the main thread; all statics are single-thread.
+unsafe extern "C" fn anim_timer_cb(_timer: *mut lvgl_sys::lv_timer_t) {
+    FRAME_IDX = 1 - FRAME_IDX;
+    let src = if FRAME_IDX == 0 { IMG_A_DSC } else { IMG_B_DSC };
+    lvgl_sys::lv_img_set_src(IMG_WIDGET, src as *const _);
 }
 
 fn main() {
