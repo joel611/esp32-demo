@@ -116,6 +116,18 @@ unsafe extern "C" fn anim_timer_cb(_timer: *mut lvgl_sys::lv_timer_t) {
     lvgl_sys::lv_img_set_src(IMG_WIDGET, src as *const _);
 }
 
+/// Construct an lv_img_dsc_t pointing at a static 64×64 RGB565 pixel array.
+/// The 'static lifetime guarantees the pointer outlives LVGL's display lifetime.
+fn make_img_dsc(pixels: &'static [u16; 4096]) -> lvgl_sys::lv_img_dsc_t {
+    let mut dsc = lvgl_sys::lv_img_dsc_t::default();
+    dsc.header.set_cf(lvgl_sys::LV_IMG_CF_TRUE_COLOR as u32); // = 4
+    dsc.header.set_w(64);
+    dsc.header.set_h(64);
+    dsc.data_size = (64 * 64 * core::mem::size_of::<u16>()) as u32;
+    dsc.data = pixels.as_ptr() as *const u8;
+    dsc
+}
+
 fn main() {
     esp_idf_svc::sys::link_patches();
     esp_idf_svc::log::EspLogger::initialize_default();
@@ -192,16 +204,39 @@ fn main() {
         // Screen 1: the default screen LVGL created when the display was registered.
         SCREEN1 = lvgl_sys::lv_disp_get_scr_act(lvgl_sys::lv_disp_get_default());
 
-        // Dark background for screen 1
+        // ── Screen 1: Pokemon sprite scene ───────────────────────────────────────
+
+        // Black background
         lvgl_sys::lv_obj_set_style_bg_color(
             SCREEN1,
-            lvgl_sys::_LV_COLOR_MAKE(0x10, 0x10, 0x10),
+            lvgl_sys::_LV_COLOR_MAKE(0x00, 0x00, 0x00),
             lvgl_sys::LV_STATE_DEFAULT,
         );
 
-        let label1 = lvgl_sys::lv_label_create(SCREEN1);
-        lvgl_sys::lv_label_set_text(label1, b"Screen 1\0".as_ptr() as *const i8);
-        lvgl_sys::lv_obj_align(label1, lvgl_sys::LV_ALIGN_CENTER as u8, 0, 0);
+        // Construct and leak image descriptors (LVGL holds raw pointer; must be 'static)
+        let img_a = Box::leak(Box::new(make_img_dsc(&sprites::PIKACHU_FRAME_A)));
+        let img_b = Box::leak(Box::new(make_img_dsc(&sprites::PIKACHU_FRAME_B)));
+        IMG_A_DSC = img_a as *const _;
+        IMG_B_DSC = img_b as *const _;
+
+        // Image widget — centered, shifted up 30 px so the name label fits below
+        let img_widget = lvgl_sys::lv_img_create(SCREEN1);
+        lvgl_sys::lv_img_set_src(img_widget, img_a as *mut lvgl_sys::lv_img_dsc_t as *const _);
+        lvgl_sys::lv_obj_align(img_widget, lvgl_sys::LV_ALIGN_CENTER as u8, 0, -30);
+        IMG_WIDGET = img_widget;
+
+        // Name label — yellow, 50 px below the center point
+        let name_label = lvgl_sys::lv_label_create(SCREEN1);
+        lvgl_sys::lv_label_set_text(name_label, b"PIKACHU\0".as_ptr() as *const i8);
+        lvgl_sys::lv_obj_set_style_text_color(
+            name_label,
+            lvgl_sys::_LV_COLOR_MAKE(0xFF, 0xFF, 0x00),
+            lvgl_sys::LV_STATE_DEFAULT,
+        );
+        lvgl_sys::lv_obj_align(name_label, lvgl_sys::LV_ALIGN_CENTER as u8, 0, 50);
+
+        // 600 ms timer — drives the idle animation frame toggle
+        lvgl_sys::lv_timer_create(Some(anim_timer_cb), 600, core::ptr::null_mut());
 
         // Screen 2: new screen object (parent = null → creates a standalone screen)
         SCREEN2 = lvgl_sys::lv_obj_create(core::ptr::null_mut());
