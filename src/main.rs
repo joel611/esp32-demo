@@ -112,6 +112,7 @@ unsafe extern "C" fn gesture_cb(e: *mut lvgl_sys::lv_event_t) {
 /// Called by lv_timer_handler() on the main thread; all statics are single-thread.
 unsafe extern "C" fn anim_timer_cb(_timer: *mut lvgl_sys::lv_timer_t) {
     FRAME_IDX = 1 - FRAME_IDX;
+    log::debug!("anim_timer: frame={}", FRAME_IDX);   // ← add this line
     let src = if FRAME_IDX == 0 { IMG_A_DSC } else { IMG_B_DSC };
     lvgl_sys::lv_img_set_src(IMG_WIDGET, src as *const _);
 }
