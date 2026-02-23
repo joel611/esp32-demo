@@ -68,19 +68,19 @@ static mut BG_DSC: *const lvgl_sys::lv_img_dsc_t = core::ptr::null();
 //      while the DMA for this buffer runs in the background.
 // lv_area_t coords are inclusive; lcd_draw_bitmap expects exclusive x2/y2.
 unsafe extern "C" fn lvgl_flush_cb(
-    disp_drv: *mut lvgl_sys::lv_disp_drv_t,
-    area: *const lvgl_sys::lv_area_t,
-    color_p: *mut lvgl_sys::lv_color_t,
+    disp: *mut lightvgl_sys::lv_display_t,
+    area: *const lightvgl_sys::lv_area_t,
+    px_map: *mut u8,
 ) {
     lcd_wait_flush_done();
     let x1 = (*area).x1 as i32;
     let y1 = (*area).y1 as i32;
     let x2 = (*area).x2 as i32 + 1;
     let y2 = (*area).y2 as i32 + 1;
-    lcd_draw_bitmap_async(x1, y1, x2, y2, color_p as *const _);
+    lcd_draw_bitmap_async(x1, y1, x2, y2, px_map as *const _);
     // Signal LVGL immediately: with two buffers, this swaps buf_act so LVGL
     // can render the next chunk into the other buffer concurrently with the DMA.
-    lvgl_sys::lv_disp_flush_ready(disp_drv);
+    lightvgl_sys::lv_display_flush_ready(disp);
 }
 
 /// LVGL input device read callback. Called by lv_timer_handler() on every tick.
@@ -197,41 +197,39 @@ fn main() {
 
     unsafe {
         // ── 2. LVGL init ──────────────────────────────────────────────────────
-        lvgl_sys::lv_init();
+        lightvgl_sys::lv_init();
 
         // ── 3. Two DMA-capable pixel buffers for double-buffering ─────────────
         // Must be internal SRAM: esp-lcd SPI driver calls esp_ptr_dma_capable()
         // which rejects PSRAM. Two 100-row buffers (~182KB total).
-        let pixel_size = core::mem::size_of::<lvgl_sys::lv_color_t>();
+        let pixel_size = core::mem::size_of::<lightvgl_sys::lv_color_t>();
         let buf1 = esp_idf_svc::sys::heap_caps_malloc(
             DRAW_BUF_PIXELS * pixel_size,
             esp_idf_svc::sys::MALLOC_CAP_DMA,
-        ) as *mut lvgl_sys::lv_color_t;
+        ) as *mut core::ffi::c_void;
         let buf2 = esp_idf_svc::sys::heap_caps_malloc(
             DRAW_BUF_PIXELS * pixel_size,
             esp_idf_svc::sys::MALLOC_CAP_DMA,
-        ) as *mut lvgl_sys::lv_color_t;
+        ) as *mut core::ffi::c_void;
         assert!(!buf1.is_null() && !buf2.is_null(), "LVGL draw buf alloc failed");
 
-        // ── 4. Draw buffer struct (leaked: LVGL holds a pointer to it) ────────
-        let disp_buf: &'static mut lvgl_sys::lv_disp_draw_buf_t =
-            Box::leak(Box::new(core::mem::zeroed()));
-        lvgl_sys::lv_disp_draw_buf_init(
-            disp_buf,
-            buf1 as *mut _,
-            buf2 as *mut _,
-            DRAW_BUF_PIXELS as u32,
-        );
+        // ── 4. Display (LVGL 9 API) ───────────────────────────────────────────
+        let disp = lightvgl_sys::lv_display_create(LCD_W as i32, LCD_H as i32);
+        assert!(!disp.is_null(), "lv_display_create failed");
 
-        // ── 5. Display driver (leaked: LVGL 8.x stores the pointer, not a copy) ─
-        let disp_drv: &'static mut lvgl_sys::lv_disp_drv_t =
-            Box::leak(Box::new(core::mem::zeroed()));
-        lvgl_sys::lv_disp_drv_init(disp_drv);
-        disp_drv.hor_res = LCD_W as lvgl_sys::lv_coord_t;
-        disp_drv.ver_res = LCD_H as lvgl_sys::lv_coord_t;
-        disp_drv.draw_buf = disp_buf;
-        disp_drv.flush_cb = Some(lvgl_flush_cb);
-        lvgl_sys::lv_disp_drv_register(disp_drv);
+        // Byte-swap RGB565 for SPI: replaces LV_COLOR_16_SWAP=1 from lv_conf.h
+        lightvgl_sys::lv_display_set_color_format(
+            disp,
+            lightvgl_sys::lv_color_format_t_LV_COLOR_FORMAT_RGB565_SWAPPED,
+        );
+        lightvgl_sys::lv_display_set_flush_cb(disp, Some(lvgl_flush_cb));
+        lightvgl_sys::lv_display_set_buffers(
+            disp,
+            buf1,
+            buf2,
+            (DRAW_BUF_PIXELS * pixel_size) as u32,
+            lightvgl_sys::lv_display_render_mode_t_LV_DISPLAY_RENDER_MODE_PARTIAL,
+        );
         log::info!("LVGL display registered");
 
         // ── 6. Input device (touch) ───────────────────────────────────────────
