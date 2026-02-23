@@ -3,6 +3,7 @@ use std::time::Duration;
 mod ft3168;
 mod safe_area;
 mod character;
+mod matrix_character;
 mod spaceship;
 mod sprites;
 
