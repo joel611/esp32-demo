@@ -33,13 +33,13 @@ static TOUCH_Y: AtomicI32 = AtomicI32::new(0);
 static TOUCH_PRESSED: AtomicBool = AtomicBool::new(false);
 
 // Screen object pointers. Written once during init, read by gesture callback.
-static mut SCREEN1: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
-static mut SCREEN2: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
+static mut SCREEN1: *mut lightvgl_sys::lv_obj_t = core::ptr::null_mut();
+static mut SCREEN2: *mut lightvgl_sys::lv_obj_t = core::ptr::null_mut();
 
 // Spaceship animation state — single-thread, written once during init
-static mut CREW_WIDGETS: [*mut lvgl_sys::lv_obj_t; 3] = [core::ptr::null_mut(); 3];
-static mut CMD_WIDGET: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
-static mut BLINK_WIDGET: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
+static mut CREW_WIDGETS: [*mut lightvgl_sys::lv_obj_t; 3] = [core::ptr::null_mut(); 3];
+static mut CMD_WIDGET: *mut lightvgl_sys::lv_obj_t = core::ptr::null_mut();
+static mut BLINK_WIDGET: *mut lightvgl_sys::lv_obj_t = core::ptr::null_mut();
 
 use crate::matrix_character::MatrixCharacter;
 use crate::character::CharacterSprite;
@@ -101,26 +101,26 @@ unsafe extern "C" fn lvgl_touch_cb(
 /// Gesture event callback attached to both screens.
 /// Swipe LEFT  → load screen 2 (if on screen 1).
 /// Swipe RIGHT → load screen 1 (if on screen 2).
-unsafe extern "C" fn gesture_cb(e: *mut lvgl_sys::lv_event_t) {
-    let indev = lvgl_sys::lv_indev_get_act();
+unsafe extern "C" fn gesture_cb(e: *mut lightvgl_sys::lv_event_t) {
+    let indev = lightvgl_sys::lv_indev_active();
     if indev.is_null() {
         return;
     }
-    let dir = lvgl_sys::lv_indev_get_gesture_dir(indev); // returns lv_dir_t = u8
-    let active = lvgl_sys::lv_disp_get_scr_act(lvgl_sys::lv_disp_get_default());
+    let dir = lightvgl_sys::lv_indev_get_gesture_dir(indev);
+    let active = lightvgl_sys::lv_screen_active();
 
-    if dir == lvgl_sys::LV_DIR_LEFT as lvgl_sys::lv_dir_t && active == SCREEN1 {
-        lvgl_sys::lv_scr_load_anim(
+    if dir == lightvgl_sys::lv_dir_t_LV_DIR_LEFT && active == SCREEN1 {
+        lightvgl_sys::lv_screen_load_anim(
             SCREEN2,
-            lvgl_sys::lv_scr_load_anim_t_LV_SCR_LOAD_ANIM_MOVE_LEFT,
+            lightvgl_sys::lv_screen_load_anim_t_LV_SCREEN_LOAD_ANIM_MOVE_LEFT,
             150,
             0,
             false,
         );
-    } else if dir == lvgl_sys::LV_DIR_RIGHT as lvgl_sys::lv_dir_t && active == SCREEN2 {
-        lvgl_sys::lv_scr_load_anim(
+    } else if dir == lightvgl_sys::lv_dir_t_LV_DIR_RIGHT && active == SCREEN2 {
+        lightvgl_sys::lv_screen_load_anim(
             SCREEN1,
-            lvgl_sys::lv_scr_load_anim_t_LV_SCR_LOAD_ANIM_MOVE_RIGHT,
+            lightvgl_sys::lv_screen_load_anim_t_LV_SCREEN_LOAD_ANIM_MOVE_RIGHT,
             150,
             0,
             false,
@@ -244,15 +244,15 @@ fn main() {
 
         // ── 7. Two-screen UI ──────────────────────────────────────────────────
         // Screen 1: the default screen LVGL created when the display was registered.
-        SCREEN1 = lvgl_sys::lv_disp_get_scr_act(lvgl_sys::lv_disp_get_default());
+        SCREEN1 = lightvgl_sys::lv_screen_active();
 
         // ── Screen 1: Spaceship bridge scene ─────────────────────────────────────
 
         // Black base background for the screen
-        lvgl_sys::lv_obj_set_style_bg_color(
+        lightvgl_sys::lv_obj_set_style_bg_color(
             SCREEN1,
-            lvgl_sys::_LV_COLOR_MAKE(0x1a, 0x20, 0x40),
-            lvgl_sys::LV_STATE_DEFAULT,
+            lightvgl_sys::lv_color_make(0x1a, 0x20, 0x40),
+            lightvgl_sys::lv_state_t_LV_STATE_DEFAULT,
         );
 
         // ── Background image (466×466) ────────────────────────────────────────────
@@ -344,10 +344,10 @@ fn main() {
         SCREEN2 = lvgl_sys::lv_obj_create(core::ptr::null_mut());
 
         // Blue background for screen 2 so it's visually distinct
-        lvgl_sys::lv_obj_set_style_bg_color(
+        lightvgl_sys::lv_obj_set_style_bg_color(
             SCREEN2,
-            lvgl_sys::_LV_COLOR_MAKE(0x00, 0x30, 0x80),
-            lvgl_sys::LV_STATE_DEFAULT,
+            lightvgl_sys::lv_color_make(0x00, 0x30, 0x80),
+            lightvgl_sys::lv_state_t_LV_STATE_DEFAULT,
         );
 
         let label2 = lvgl_sys::lv_label_create(SCREEN2);
@@ -356,16 +356,16 @@ fn main() {
 
         // Attach gesture callbacks — LVGL sends LV_EVENT_GESTURE to the screen
         // when a drag exceeds LV_INDEV_DEF_GESTURE_LIMIT (default 50px).
-        lvgl_sys::lv_obj_add_event_cb(
+        lightvgl_sys::lv_obj_add_event_cb(
             SCREEN1,
             Some(gesture_cb),
-            lvgl_sys::lv_event_code_t_LV_EVENT_GESTURE,
+            lightvgl_sys::lv_event_code_t_LV_EVENT_GESTURE,
             core::ptr::null_mut(),
         );
-        lvgl_sys::lv_obj_add_event_cb(
+        lightvgl_sys::lv_obj_add_event_cb(
             SCREEN2,
             Some(gesture_cb),
-            lvgl_sys::lv_event_code_t_LV_EVENT_GESTURE,
+            lightvgl_sys::lv_event_code_t_LV_EVENT_GESTURE,
             core::ptr::null_mut(),
         );
 
