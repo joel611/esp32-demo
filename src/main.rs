@@ -203,7 +203,9 @@ fn main() {
         // ── 3. Two DMA-capable pixel buffers for double-buffering ─────────────
         // Must be internal SRAM: esp-lcd SPI driver calls esp_ptr_dma_capable()
         // which rejects PSRAM. Two 100-row buffers (~182KB total).
-        let pixel_size = core::mem::size_of::<lightvgl_sys::lv_color_t>();
+        // In LVGL 9, lv_color_t is 3 bytes (RGB888) but draw buffers use the
+        // display's color format (RGB565_SWAPPED = 2 bytes/pixel).
+        let pixel_size = 2_usize; // RGB565 = 2 bytes per pixel
         let buf1 = esp_idf_svc::sys::heap_caps_malloc(
             DRAW_BUF_PIXELS * pixel_size,
             esp_idf_svc::sys::MALLOC_CAP_DMA,
