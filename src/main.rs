@@ -41,6 +41,12 @@ static mut CREW_WIDGETS: [*mut lvgl_sys::lv_obj_t; 3] = [core::ptr::null_mut(); 
 static mut CMD_WIDGET: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
 static mut BLINK_WIDGET: *mut lvgl_sys::lv_obj_t = core::ptr::null_mut();
 
+use crate::matrix_character::MatrixCharacter;
+use crate::character::CharacterSprite;
+
+// MatrixCharacter — lives for program lifetime (Box::leaked in ::new())
+static mut MATRIX_CHAR: *mut MatrixCharacter = core::ptr::null_mut();
+
 static mut CREW_FRAME: u8 = 0;
 static mut CMD_FRAME: u8 = 0;
 static mut BLINK_FRAME: u8 = 0;
@@ -322,6 +328,14 @@ fn main() {
         lvgl_sys::lv_obj_set_pos(blink_widget, 193, 35);
         BLINK_WIDGET = blink_widget;
 
+        // ── Matrix character ─────────────────────────────────────────────────────────
+        // Spawn at centre of screen; call walk_to() to move it.
+        MATRIX_CHAR = MatrixCharacter::new(SCREEN1, 200, 200);
+        log::info!("MatrixCharacter created at (200, 200)");
+
+        // Quick smoke test: walk from (200,200) to (100,350).
+        (*MATRIX_CHAR).walk_to(100, 350);
+
         // ── Animation timers ──────────────────────────────────────────────────────
         lvgl_sys::lv_timer_create(Some(crew_timer_cb),  600,  core::ptr::null_mut());
         lvgl_sys::lv_timer_create(Some(cmd_timer_cb),   800,  core::ptr::null_mut());
@@ -378,6 +392,8 @@ fn main() {
         unsafe {
             lvgl_sys::lv_tick_inc(5);
             lvgl_sys::lv_timer_handler();
+            // Advance MatrixCharacter animation (idle blink / walk frames + position).
+            (*MATRIX_CHAR).update(5);
         }
         std::thread::sleep(Duration::from_millis(5));
     }
