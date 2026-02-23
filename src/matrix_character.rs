@@ -208,10 +208,10 @@ enum AnimState {
 pub struct MatrixCharacter {
     // One image descriptor per frame, stored inside the leaked struct so that
     // their addresses remain stable (LVGL holds raw pointers).
-    idle_dscs: [lvgl_sys::lv_img_dsc_t; 2],
-    walk_dscs: [lvgl_sys::lv_img_dsc_t; 4],
+    idle_dscs: [lightvgl_sys::lv_image_dsc_t; 2],
+    walk_dscs: [lightvgl_sys::lv_image_dsc_t; 4],
 
-    widget: *mut lvgl_sys::lv_obj_t,
+    widget: *mut lightvgl_sys::lv_obj_t,
     scale:          u16,
 
     state:          AnimState,
@@ -226,12 +226,13 @@ unsafe impl Send for MatrixCharacter {}
 unsafe impl Sync for MatrixCharacter {}
 
 // ─── Helper: build an lv_img_dsc_t from a pixel slice ────────────────────────
-fn make_dsc(pixels: &'static [u16]) -> lvgl_sys::lv_img_dsc_t {
-    let mut dsc = lvgl_sys::lv_img_dsc_t::default();
-    dsc.header.set_cf(lvgl_sys::LV_IMG_CF_TRUE_COLOR as u32);
+fn make_dsc(pixels: &'static [u16]) -> lightvgl_sys::lv_image_dsc_t {
+    let mut dsc: lightvgl_sys::lv_image_dsc_t = unsafe { core::mem::zeroed() };
+    dsc.header.set_cf(lightvgl_sys::lv_color_format_t_LV_COLOR_FORMAT_RGB565_SWAPPED as u32);
     dsc.header.set_w(CHAR_W as u32);
     dsc.header.set_h(CHAR_H as u32);
-    dsc.data_size = (CHAR_W * CHAR_H * core::mem::size_of::<u16>() as i32) as u32;
+    dsc.header.set_stride(CHAR_W as u32 * 2);  // bytes per row
+    dsc.data_size = (CHAR_W * CHAR_H * 2) as u32;
     dsc.data = pixels.as_ptr() as *const u8;
     dsc
 }
@@ -243,7 +244,7 @@ impl MatrixCharacter {
     ///
     /// # Safety
     /// Must be called from the LVGL init block (single-threaded context).
-    pub unsafe fn new(screen: *mut lvgl_sys::lv_obj_t, x: i32, y: i32, scale: u16) -> &'static mut Self {
+    pub unsafe fn new(screen: *mut lightvgl_sys::lv_obj_t, x: i32, y: i32, scale: u16) -> &'static mut Self {
         // Build image descriptors for all 6 frames.
         let idle_dscs = [
             make_dsc(&IDLE_FRAME_0),
@@ -257,12 +258,12 @@ impl MatrixCharacter {
         ];
 
         // Create the LVGL image widget.
-        let widget = lvgl_sys::lv_img_create(screen);
-        lvgl_sys::lv_obj_set_pos(widget, x as i16, y as i16);
+        let widget = lightvgl_sys::lv_image_create(screen);
+        lightvgl_sys::lv_obj_set_pos(widget, x, y);
         // Nearest-neighbor upscale (LV_IMG_ANTIALIAS=0 by default → pixel art look).
         // Pivot at (0,0) so zoom expands right+down; walk coordinates stay in unscaled space.
-        lvgl_sys::lv_img_set_pivot(widget, 0, 0);
-        lvgl_sys::lv_img_set_zoom(widget, 256 * scale as u16);
+        lightvgl_sys::lv_image_set_pivot(widget, 0, 0);
+        lightvgl_sys::lv_image_set_scale(widget, 256 * scale as u32);
 
         // Leak the struct so it has a stable address for LVGL.
         let this: &'static mut Self = Box::leak(Box::new(MatrixCharacter {
@@ -278,9 +279,9 @@ impl MatrixCharacter {
         }));
 
         // Set initial image (idle frame 0).
-        lvgl_sys::lv_img_set_src(
+        lightvgl_sys::lv_image_set_src(
             this.widget,
-            &this.idle_dscs[0] as *const lvgl_sys::lv_img_dsc_t as *const core::ffi::c_void,
+            &this.idle_dscs[0] as *const lightvgl_sys::lv_image_dsc_t as *const core::ffi::c_void,
         );
 
         this
@@ -306,9 +307,9 @@ impl CharacterSprite for MatrixCharacter {
                     self.frame_timer_ms = 0;
                     self.frame_idx = (self.frame_idx + 1) % self.idle_dscs.len();
                     unsafe {
-                        lvgl_sys::lv_img_set_src(
+                        lightvgl_sys::lv_image_set_src(
                             self.widget,
-                            &self.idle_dscs[self.frame_idx] as *const lvgl_sys::lv_img_dsc_t
+                            &self.idle_dscs[self.frame_idx] as *const lightvgl_sys::lv_image_dsc_t
                                 as *const core::ffi::c_void,
                         );
                     }
@@ -323,9 +324,9 @@ impl CharacterSprite for MatrixCharacter {
                     self.frame_timer_ms = 0;
                     self.frame_idx = (self.frame_idx + 1) % self.walk_dscs.len();
                     unsafe {
-                        lvgl_sys::lv_img_set_src(
+                        lightvgl_sys::lv_image_set_src(
                             self.widget,
-                            &self.walk_dscs[self.frame_idx] as *const lvgl_sys::lv_img_dsc_t
+                            &self.walk_dscs[self.frame_idx] as *const lightvgl_sys::lv_image_dsc_t
                                 as *const core::ffi::c_void,
                         );
                     }
@@ -345,9 +346,9 @@ impl CharacterSprite for MatrixCharacter {
                     self.frame_idx = 0;
                     self.frame_timer_ms = 0;
                     unsafe {
-                        lvgl_sys::lv_img_set_src(
+                        lightvgl_sys::lv_image_set_src(
                             self.widget,
-                            &self.idle_dscs[0] as *const lvgl_sys::lv_img_dsc_t
+                            &self.idle_dscs[0] as *const lightvgl_sys::lv_image_dsc_t
                                 as *const core::ffi::c_void,
                         );
                     }
@@ -360,7 +361,7 @@ impl CharacterSprite for MatrixCharacter {
                 }
 
                 unsafe {
-                    lvgl_sys::lv_obj_set_pos(self.widget, self.pos_x as i16, self.pos_y as i16);
+                    lightvgl_sys::lv_obj_set_pos(self.widget, self.pos_x, self.pos_y);
                 }
             }
         }
