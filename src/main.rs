@@ -86,15 +86,15 @@ unsafe extern "C" fn lvgl_flush_cb(
 /// LVGL input device read callback. Called by lv_timer_handler() on every tick.
 /// Reads touch state from the atomics updated in the main loop.
 unsafe extern "C" fn lvgl_touch_cb(
-    _drv: *mut lvgl_sys::lv_indev_drv_t,
-    data: *mut lvgl_sys::lv_indev_data_t,
+    _indev: *mut lightvgl_sys::lv_indev_t,
+    data: *mut lightvgl_sys::lv_indev_data_t,
 ) {
     if TOUCH_PRESSED.load(Ordering::Relaxed) {
-        (*data).point.x = TOUCH_X.load(Ordering::Relaxed) as lvgl_sys::lv_coord_t;
-        (*data).point.y = TOUCH_Y.load(Ordering::Relaxed) as lvgl_sys::lv_coord_t;
-        (*data).state = lvgl_sys::lv_indev_state_t_LV_INDEV_STATE_PRESSED;
+        (*data).point.x = TOUCH_X.load(Ordering::Relaxed);
+        (*data).point.y = TOUCH_Y.load(Ordering::Relaxed);
+        (*data).state = lightvgl_sys::lv_indev_state_t_LV_INDEV_STATE_PRESSED;
     } else {
-        (*data).state = lvgl_sys::lv_indev_state_t_LV_INDEV_STATE_RELEASED;
+        (*data).state = lightvgl_sys::lv_indev_state_t_LV_INDEV_STATE_RELEASED;
     }
 }
 
@@ -233,12 +233,13 @@ fn main() {
         log::info!("LVGL display registered");
 
         // ── 6. Input device (touch) ───────────────────────────────────────────
-        let indev_drv: &'static mut lvgl_sys::lv_indev_drv_t =
-            Box::leak(Box::new(core::mem::zeroed()));
-        lvgl_sys::lv_indev_drv_init(indev_drv);
-        indev_drv.type_ = lvgl_sys::lv_indev_type_t_LV_INDEV_TYPE_POINTER;
-        indev_drv.read_cb = Some(lvgl_touch_cb);
-        lvgl_sys::lv_indev_drv_register(indev_drv);
+        let indev = lightvgl_sys::lv_indev_create();
+        assert!(!indev.is_null(), "lv_indev_create failed");
+        lightvgl_sys::lv_indev_set_type(
+            indev,
+            lightvgl_sys::lv_indev_type_t_LV_INDEV_TYPE_POINTER,
+        );
+        lightvgl_sys::lv_indev_set_read_cb(indev, Some(lvgl_touch_cb));
         log::info!("LVGL touch input registered");
 
         // ── 7. Two-screen UI ──────────────────────────────────────────────────
