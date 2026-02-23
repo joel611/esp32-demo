@@ -212,6 +212,7 @@ pub struct MatrixCharacter {
     walk_dscs: [lvgl_sys::lv_img_dsc_t; 4],
 
     widget: *mut lvgl_sys::lv_obj_t,
+    scale:          u16,
 
     state:          AnimState,
     frame_idx:      usize,
@@ -242,7 +243,7 @@ impl MatrixCharacter {
     ///
     /// # Safety
     /// Must be called from the LVGL init block (single-threaded context).
-    pub unsafe fn new(screen: *mut lvgl_sys::lv_obj_t, x: i32, y: i32) -> &'static mut Self {
+    pub unsafe fn new(screen: *mut lvgl_sys::lv_obj_t, x: i32, y: i32, scale: u16) -> &'static mut Self {
         // Build image descriptors for all 6 frames.
         let idle_dscs = [
             make_dsc(&IDLE_FRAME_0),
@@ -258,12 +259,17 @@ impl MatrixCharacter {
         // Create the LVGL image widget.
         let widget = lvgl_sys::lv_img_create(screen);
         lvgl_sys::lv_obj_set_pos(widget, x as i16, y as i16);
+        // Nearest-neighbor upscale (LV_IMG_ANTIALIAS=0 by default → pixel art look).
+        // Pivot at (0,0) so zoom expands right+down; walk coordinates stay in unscaled space.
+        lvgl_sys::lv_img_set_pivot(widget, 0, 0);
+        lvgl_sys::lv_img_set_zoom(widget, 256 * scale as u16);
 
         // Leak the struct so it has a stable address for LVGL.
         let this: &'static mut Self = Box::leak(Box::new(MatrixCharacter {
             idle_dscs,
             walk_dscs,
             widget,
+            scale,
             state: AnimState::Idle,
             frame_idx: 0,
             frame_timer_ms: 0,

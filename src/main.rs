@@ -330,7 +330,7 @@ fn main() {
 
         // ── Matrix character ─────────────────────────────────────────────────────────
         // Spawn at centre of screen; call walk_to() to move it.
-        MATRIX_CHAR = MatrixCharacter::new(SCREEN1, 200, 200);
+        MATRIX_CHAR = MatrixCharacter::new(SCREEN1, 200, 200, 3);
         log::info!("MatrixCharacter created at (200, 200)");
 
         // Quick smoke test: walk from (200,200) to (100,350).
