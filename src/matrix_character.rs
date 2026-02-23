@@ -223,3 +223,60 @@ pub struct MatrixCharacter {
 // Safety: MatrixCharacter is only used on the single LVGL thread.
 unsafe impl Send for MatrixCharacter {}
 unsafe impl Sync for MatrixCharacter {}
+
+// ─── Helper: build an lv_img_dsc_t from a pixel slice ────────────────────────
+fn make_dsc(pixels: &'static [u16]) -> lvgl_sys::lv_img_dsc_t {
+    let mut dsc = lvgl_sys::lv_img_dsc_t::default();
+    dsc.header.set_cf(lvgl_sys::LV_IMG_CF_TRUE_COLOR as u32);
+    dsc.header.set_w(CHAR_W as u32);
+    dsc.header.set_h(CHAR_H as u32);
+    dsc.data_size = (CHAR_W * CHAR_H * core::mem::size_of::<u16>() as i32) as u32;
+    dsc.data = pixels.as_ptr() as *const u8;
+    dsc
+}
+
+impl MatrixCharacter {
+    /// Create a new MatrixCharacter on `screen` at position `(x, y)`.
+    /// The struct is Box::leaked so LVGL descriptor pointers remain valid.
+    /// Returns a `'static` mutable reference — store in a static mut pointer.
+    ///
+    /// # Safety
+    /// Must be called from the LVGL init block (single-threaded context).
+    pub unsafe fn new(screen: *mut lvgl_sys::lv_obj_t, x: i32, y: i32) -> &'static mut Self {
+        // Build image descriptors for all 6 frames.
+        let idle_dscs = [
+            make_dsc(&IDLE_FRAME_0),
+            make_dsc(&IDLE_FRAME_1),
+        ];
+        let walk_dscs = [
+            make_dsc(&WALK_FRAME_0),
+            make_dsc(&WALK_FRAME_1),
+            make_dsc(&WALK_FRAME_2),
+            make_dsc(&WALK_FRAME_3),
+        ];
+
+        // Create the LVGL image widget.
+        let widget = lvgl_sys::lv_img_create(screen);
+        lvgl_sys::lv_obj_set_pos(widget, x as i16, y as i16);
+
+        // Leak the struct so it has a stable address for LVGL.
+        let this: &'static mut Self = Box::leak(Box::new(MatrixCharacter {
+            idle_dscs,
+            walk_dscs,
+            widget,
+            state: AnimState::Idle,
+            frame_idx: 0,
+            frame_timer_ms: 0,
+            pos_x: x,
+            pos_y: y,
+        }));
+
+        // Set initial image (idle frame 0).
+        lvgl_sys::lv_img_set_src(
+            this.widget,
+            &this.idle_dscs[0] as *const lvgl_sys::lv_img_dsc_t as *const core::ffi::c_void,
+        );
+
+        this
+    }
+}
