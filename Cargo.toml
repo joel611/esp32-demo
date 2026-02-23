@@ -30,6 +30,7 @@ lvgl = { version = "0.6.2", default-features= false, features= [
   "unsafe_no_autoinit",
 ] }
 lvgl-sys = "0.6.2"
+libm = "0.2"
 
 embedded-hal = "1.0.0"
 

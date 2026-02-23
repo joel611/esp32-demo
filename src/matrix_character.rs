@@ -280,3 +280,91 @@ impl MatrixCharacter {
         this
     }
 }
+
+impl CharacterSprite for MatrixCharacter {
+    fn walk_to(&mut self, target_x: i32, target_y: i32) {
+        if target_x == self.pos_x && target_y == self.pos_y {
+            return;
+        }
+        self.state = AnimState::Walking { target_x, target_y };
+        self.frame_idx = 0;
+        self.frame_timer_ms = 0;
+    }
+
+    fn update(&mut self, delta_ms: u32) {
+        self.frame_timer_ms += delta_ms;
+
+        match &self.state {
+            AnimState::Idle => {
+                if self.frame_timer_ms >= IDLE_FRAME_MS {
+                    self.frame_timer_ms = 0;
+                    self.frame_idx = (self.frame_idx + 1) % self.idle_dscs.len();
+                    unsafe {
+                        lvgl_sys::lv_img_set_src(
+                            self.widget,
+                            &self.idle_dscs[self.frame_idx] as *const lvgl_sys::lv_img_dsc_t
+                                as *const core::ffi::c_void,
+                        );
+                    }
+                }
+            }
+
+            AnimState::Walking { target_x, target_y } => {
+                let (tx, ty) = (*target_x, *target_y);
+
+                // Advance walk frame.
+                if self.frame_timer_ms >= WALK_FRAME_MS {
+                    self.frame_timer_ms = 0;
+                    self.frame_idx = (self.frame_idx + 1) % self.walk_dscs.len();
+                    unsafe {
+                        lvgl_sys::lv_img_set_src(
+                            self.widget,
+                            &self.walk_dscs[self.frame_idx] as *const lvgl_sys::lv_img_dsc_t
+                                as *const core::ffi::c_void,
+                        );
+                    }
+                }
+
+                // Move toward target.
+                let dx = tx - self.pos_x;
+                let dy = ty - self.pos_y;
+                let dist_sq = dx * dx + dy * dy;
+                let speed_sq = WALK_SPEED * WALK_SPEED;
+
+                if dist_sq <= speed_sq {
+                    // Arrived.
+                    self.pos_x = tx;
+                    self.pos_y = ty;
+                    self.state = AnimState::Idle;
+                    self.frame_idx = 0;
+                    self.frame_timer_ms = 0;
+                    unsafe {
+                        lvgl_sys::lv_img_set_src(
+                            self.widget,
+                            &self.idle_dscs[0] as *const lvgl_sys::lv_img_dsc_t
+                                as *const core::ffi::c_void,
+                        );
+                    }
+                } else {
+                    // Step proportionally toward target using integer sqrt approximation.
+                    // ESP32-S3 has FPU; f32 sqrt is fine at runtime.
+                    let dist = libm::sqrtf(dist_sq as f32) as i32;
+                    self.pos_x += (dx * WALK_SPEED) / dist;
+                    self.pos_y += (dy * WALK_SPEED) / dist;
+                }
+
+                unsafe {
+                    lvgl_sys::lv_obj_set_pos(self.widget, self.pos_x as i16, self.pos_y as i16);
+                }
+            }
+        }
+    }
+
+    fn position(&self) -> (i32, i32) {
+        (self.pos_x, self.pos_y)
+    }
+
+    fn is_idle(&self) -> bool {
+        matches!(self.state, AnimState::Idle)
+    }
+}
